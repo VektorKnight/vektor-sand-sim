@@ -1,0 +1,282 @@
+#include "SandUtil.hlsl"
+
+// ============================================================================
+// GPU falling-sand simulation using a single-buffer, red/black checkerboard
+// scheme with compare-and-swap (CAS) for thread-safe cell movement.
+//
+// Frame execution order (driven by SandSimulation.cs):
+//   1. Paint     – write user input into the grid
+//   2. Gravity   – apply gravity, clear per-frame flags, reset stalled velocity
+//   3. Simulate  – _SimSteps iterations × 2 passes (red, black) of movement
+//   4. Visualize – write material colors to the output texture
+//
+// Movement uses Bresenham-style velocity stepping.
+//
+// The red/black checkerboard ensures no two horizontally-adjacent cells are
+// evaluated in the same pass, reducing data races on the shared buffer.
+// ============================================================================
+
+#pragma kernel Paint
+#pragma kernel Gravity
+#pragma kernel Simulate
+#pragma kernel Visualize
+
+// Paint params.
+int _PaintX;
+int _PaintY;
+int _PaintR;
+uint _PaintType;
+uint _PaintReplace; // 1 = overwrite existing materials, 0 = only fill empty cells.
+
+// Cursor params (for Visualize overlay).
+int _CursorX;
+int _CursorY;
+int _CursorR;
+uint _CursorMat;
+
+// Simulation params.
+int _SimWidth;  // X dimension of the sim.
+int _SimHeight; // Y dimension of the sim.
+int _SimSteps;  // Total number of steps per-frame.
+int _SimStep;   // Current step within a frame.
+int _SimFrame;  // Current simulation frame.
+int _SimPass;   // Red or black on this step.
+
+RWStructuredBuffer<uint>  _SimData;
+RWTexture2D<float4> _VisTexture;
+
+int to_flat(int2 i) {
+    return i.x + i.y * _SimWidth;
+}
+
+bool in_bounds(int2 id) {
+    return id.x >= 0 && id.x < _SimWidth &&
+           id.y >= 0 && id.y < _SimHeight;
+}
+
+// Bresenham-style gating.
+// Distributes move attempts evenly across _SimSteps.
+// Returns true on steps where the scaled position crosses an integer boundary.
+bool should_move(int vel) {
+    float steps = (float)_SimSteps;
+    return floor(_SimStep * vel / steps) !=
+           floor((_SimStep - 1) * vel / steps);
+}
+
+bool try_move(int2 from, int2 to, uint cell) {
+    if (!in_bounds(to)) {
+        return false;
+    }
+    
+    // Extract properties to compare.
+    const uint cell_to = _SimData[to_flat(to)];
+    const uint mat_from = get_material(cell);
+    const uint mat_to = get_material(cell_to);
+    
+    // Can move if destination is air or density is greater.
+    const bool can_move = mat_to == ID_EMPTY ||
+                          get_density(mat_from) > get_density(mat_to);
+    
+    if (!can_move) {
+        return false;
+    }
+    
+    // Set the moved flags for red/black and frame velocity tracking.
+    // These will only be set in the actual data if the move succeeds.
+    uint flags = get_flags(cell);
+    
+    flags |= MOVED_LAST_STEP;
+    flags |= MOVED_LAST_FRAME;
+    
+    cell = set_flags(cell, flags);
+    
+    // CAS the destination: atomically replace cell_to with our cell data.
+    // If another thread modified the destination first, we skip this move.
+    int original;
+    InterlockedCompareExchange(_SimData[to_flat(to)], cell_to, cell, original);
+    if ((uint)original == cell_to) {
+        _SimData[to_flat(from)] = cell_to;
+        return true;
+    }
+
+    return false;
+}
+
+// Determine if a cell should move this step and try to execute the move.
+void evaluate_move(uint2 id) {
+    const uint cell = _SimData[to_flat(id)];
+
+    if (get_material(cell) == ID_EMPTY) {
+        return;
+    }
+
+    // If the cell was moved in a previous pass, clear flag and skip.
+    // Prevents the red/black passes from moving a cell repeatedly.
+    uint flags = get_flags(cell);
+    if (flags & MOVED_LAST_STEP) {
+        flags &= ~MOVED_LAST_STEP;
+        _SimData[to_flat(id)] = set_flags(cell, flags);
+        
+        return;
+    }
+    
+    // Fetch velocities and determine if we should move on each axis.
+    // Successful moves early out with the expectation that other moves will occur in subsequent steps.
+    const int x_vel = get_x_vel(cell);
+    const int y_vel = get_y_vel(cell);
+    
+    const bool move_x = should_move(x_vel);
+    const bool move_y = should_move(y_vel);
+    
+    // Try to execute a vertical move.
+    if (move_y) {
+        const int dir = sign(y_vel);
+        const int side = (hash(id, _SimFrame) & 1) == 0 ? -1 : 1;
+        
+        if (try_move(id, id + int2(0, dir), cell)) return;
+        if (try_move(id, id + int2(side, dir), cell)) return;
+        if (try_move(id, id + int2(-side, dir), cell)) return;
+    }
+    
+    // Try to execute lateral move.
+    if (move_x) {
+        int dir = sign(x_vel);
+        if (try_move(id, id + int2(dir, 0), cell)) return;
+    }
+    
+    // Fluid lateral spread: only when resting on a surface (not free-falling).
+    // Prevents falling water from spraying sideways while still allowing
+    // pooled water to spread and find its level.
+    if (is_fluid(get_material(cell))) {
+        int2 below = id + int2(0, -1);
+        bool supported = !in_bounds(below) ||
+                         get_material(_SimData[to_flat(below)]) != ID_EMPTY;
+
+        if (supported) {
+            int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
+
+            if (try_move(id, id + int2(side,  0), cell)) return;
+            if (try_move(id, id + int2(-side, 0), cell)) return;
+        }
+    }
+}
+
+[numthreads(8,8,1)]
+void Paint(uint3 id : SV_DispatchThreadID) {
+    // Determine paint cell from thread ID.
+    const int2 cell = int2(
+        (int)id.x + (_PaintX - _PaintR), 
+        (int)id.y + (_PaintY - _PaintR)
+    );
+    
+    // Skip if out of bounds or not in paint circle.
+    const bool in_bounds = cell.x >= 0 && cell.x < _SimWidth &&
+                           cell.y >= 0 && cell.y < _SimHeight;
+    
+    const int dx = cell.x - _PaintX;
+    const int dy = cell.y - _PaintY;
+    const int r2 = _PaintR * _PaintR;
+    const int d2 = dx * dx + dy * dy;
+    
+    const bool in_circle = d2 <= r2;
+    
+    if (!in_bounds || !in_circle) {
+        return;
+    }
+
+    // In non-replacement mode, only fill empty cells (erase always works).
+    if (!_PaintReplace && _PaintType != ID_EMPTY) {
+        if (get_material(_SimData[to_flat(cell)]) != ID_EMPTY) {
+            return;
+        }
+    }
+
+    _SimData[to_flat(cell)] = _PaintType;
+}
+
+[numthreads(8,8,1)]
+void Gravity(uint3 id : SV_DispatchThreadID) {
+    if (!in_bounds(id.xy)) {
+        return;
+    }
+    
+    uint cell = _SimData[to_flat(id.xy)];
+    const uint mat = get_material(cell);
+    
+    if (mat == ID_EMPTY) {
+        return;
+    }
+    
+    // Get flags and check if we need to clear velocity.
+    uint flags = get_flags(cell);
+    
+    const bool moved = (flags & MOVED_LAST_FRAME) != 0;
+    
+    // Clear moved flags since this kernel runs at the start of a new frame.
+    flags &= ~MOVED_LAST_STEP;
+    flags &= ~MOVED_LAST_FRAME;
+    
+    cell = set_flags(cell, flags);
+    
+    // Velocity gets reset if a particle never moved last frame.
+    if (!moved) {
+        cell = set_x_vel(cell, 0);
+        cell = set_y_vel(cell, 0);
+    }
+    
+    // Add gravity and clamp to per-material terminal velocity.
+    int term = get_terminal_vel(mat);
+    int y_vel = get_y_vel(cell) - get_gravity(mat);
+    y_vel = clamp(y_vel, -term, term);
+    
+    _SimData[to_flat(id.xy)] = set_y_vel(cell, y_vel);
+}
+
+[numthreads(8,8,1)]
+void Simulate(uint3 id : SV_DispatchThreadID) {
+    // Red/black checkerboard offset.
+    const int offset_x = (id.y + (uint)_SimPass) & 1;
+
+    // Reverse the thread-to-cell mapping on odd steps so that CAS
+    // serialization priority alternates direction each step, cancelling
+    // any hardware-induced lateral bias.
+    int half_w = (_SimWidth + 1) / 2;
+    int mx = (_SimStep & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
+    const int2 cell = int2(mx * 2 + offset_x, (int)id.y);
+
+    if (cell.x < 0 || cell.x >= _SimWidth || cell.y >= _SimHeight || cell.y == 0) {
+        return;
+    }
+    
+    evaluate_move(cell);
+}
+
+[numthreads(8,8,1)]
+void Visualize(uint3 id : SV_DispatchThreadID) {
+    // Skip if out of bounds.
+    const bool in_bounds = id.x < _SimWidth &&
+                           id.y < _SimHeight;
+    
+    if (!in_bounds) {
+        return;
+    }
+    
+    const uint cell = _SimData[to_flat(id.xy)];
+    const uint mat = get_material(cell);
+
+    _VisTexture[id.xy] = get_color(mat);
+
+    // Draw cursor ring in the selected material color.
+    if (_CursorR > 0) {
+        int dx = (int)id.x - _CursorX;
+        int dy = (int)id.y - _CursorY;
+        int d2 = dx * dx + dy * dy;
+        int r_inner = _CursorR - 1;
+
+        if (d2 <= _CursorR * _CursorR && d2 >= r_inner * r_inner) {
+            float4 base_color = get_color(_CursorMat);
+            _VisTexture[id.xy] = float4(saturate(base_color.rgb + 0.3), 1);
+        }
+    }
+}
+
