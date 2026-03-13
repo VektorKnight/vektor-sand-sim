@@ -24,6 +24,16 @@
 #define MOVED_LAST_STEP 1   // Cell was moved in a prior red/black pass this step.
 #define MOVED_LAST_FRAME 2  // Cell moved at least once during the previous frame.
 
+// Material properties struct mirrored from the C# side.
+struct MaterialProperties {
+    uint fluidity;
+    uint density;
+    int gravity;
+    uint terminal_vel;
+    
+    float4 color;
+};
+
 bool is_fluid(uint id) {
     switch (id) {
         case ID_WATER: return true;
