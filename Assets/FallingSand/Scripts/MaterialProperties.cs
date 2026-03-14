@@ -13,38 +13,35 @@ namespace FallingSand.Scripts {
     public struct MaterialProperties {
         public readonly uint Fluidity;
         public readonly uint Density;
-        public readonly int Gravity;
-        public readonly uint TerminalVel;
-        
+        public readonly int Weight;
+        public readonly uint Drag;
+
         // Visual properties, currently just color.
         public readonly float4 Color;
 
         public MaterialProperties(
             uint fluidity,
             uint density,
-            int gravity,
-            uint terminalVel,
+            int weight,
+            uint drag,
             float4 color
         ) {
-            Fluidity    = Math.Min(fluidity, 255);
-            Density     = Math.Min(density, 255);
-            Gravity     = Math.Clamp(gravity, -127, 127);
-            TerminalVel = Math.Min(terminalVel, 127);
-            
+            Fluidity = Math.Min(fluidity, 255);
+            Density  = Math.Min(density, 255);
+            Weight   = Math.Clamp(weight, -256, 256);
+            Drag     = Math.Min(drag, 255);
+
             Color = color;
         }
-        
-        /// <summary>
-        /// Create the GPU-friendly material property structure from the Unity-friendly definition.
-        /// TODO: Some extra validation and/or sanitization.
-        /// </summary>
+
         public static MaterialProperties FromDefinition(MaterialDefinition def) {
+            var linear = def.Color.linear;
             return new MaterialProperties(
                 (uint)def.Fluidity,
                 (uint)def.Density,
-                def.Gravity,
-                (uint)def.TerminalVel,
-                new float4(def.Color.r, def.Color.g, def.Color.b, def.Color.a)
+                def.Weight,
+                (uint)def.Drag,
+                new float4(linear.r, linear.g, linear.b, linear.a)
             );
         }
     }

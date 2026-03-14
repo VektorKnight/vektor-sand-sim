@@ -41,7 +41,9 @@ int _SimSteps;  // Total number of steps per-frame.
 int _SimStep;   // Current step within a frame.
 int _SimFrame;  // Current simulation frame.
 int _SimPass;   // Red or black on this step.
+int _Gravity;   // Global downward acceleration. Per-material weight scales this.
 
+StructuredBuffer<MaterialProperties> _Materials;
 RWStructuredBuffer<uint>  _SimData;
 RWTexture2D<float4> _VisTexture;
 
@@ -52,6 +54,18 @@ int to_flat(int2 i) {
 bool in_bounds(int2 id) {
     return id.x >= 0 && id.x < _SimWidth &&
            id.y >= 0 && id.y < _SimHeight;
+}
+
+MaterialProperties get_mat_props(uint cell) {
+    return _Materials[get_mat_id(cell)];
+}
+
+uint get_cell_data(int2 id) {
+    return _SimData[to_flat(id)];
+}
+
+void set_cell_data(int2 id, uint data) {
+    _SimData[to_flat(id)] = data;
 }
 
 // Bresenham-style gating.
@@ -69,13 +83,13 @@ bool try_move(int2 from, int2 to, uint cell) {
     }
     
     // Extract properties to compare.
-    const uint cell_to = _SimData[to_flat(to)];
-    const uint mat_from = get_material(cell);
-    const uint mat_to = get_material(cell_to);
+    uint cell_to = get_cell_data(to);
+    
+    const MaterialProperties mat_from   = get_mat_props(cell);
+    const MaterialProperties mat_to     = get_mat_props(cell_to);
     
     // Can move if destination is air or density is greater.
-    const bool can_move = mat_to == ID_EMPTY ||
-                          get_density(mat_from) > get_density(mat_to);
+    const bool can_move = mat_from.density > mat_to.density;
     
     if (!can_move) {
         return false;
@@ -83,19 +97,18 @@ bool try_move(int2 from, int2 to, uint cell) {
     
     // Set the moved flags for red/black and frame velocity tracking.
     // These will only be set in the actual data if the move succeeds.
-    uint flags = get_flags(cell);
+    // We want to make sure we clear the replaced cell's flag as well.
+    const uint original_to = cell_to;
     
-    flags |= MOVED_LAST_STEP;
-    flags |= MOVED_LAST_FRAME;
+    cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
+    cell_to = clear_flag(cell_to, MOVED_LAST_STEP);
     
-    cell = set_flags(cell, flags);
-    
-    // CAS the destination: atomically replace cell_to with our cell data.
+    // CAS the destination to try and atomically replace cell_to with our cell data.
     // If another thread modified the destination first, we skip this move.
     int original;
-    InterlockedCompareExchange(_SimData[to_flat(to)], cell_to, cell, original);
-    if ((uint)original == cell_to) {
-        _SimData[to_flat(from)] = cell_to;
+    InterlockedCompareExchange(_SimData[to_flat(to)], original_to, cell, original);
+    if ((uint)original == original_to) {
+        set_cell_data(from, cell_to);
         return true;
     }
 
@@ -104,19 +117,17 @@ bool try_move(int2 from, int2 to, uint cell) {
 
 // Determine if a cell should move this step and try to execute the move.
 void evaluate_move(uint2 id) {
-    const uint cell = _SimData[to_flat(id)];
+    const uint cell = get_cell_data(id);
+    const MaterialProperties mat = get_mat_props(cell);
 
-    if (get_material(cell) == ID_EMPTY) {
+    if (is_empty(cell)) {
         return;
     }
 
     // If the cell was moved in a previous pass, clear flag and skip.
     // Prevents the red/black passes from moving a cell repeatedly.
-    uint flags = get_flags(cell);
-    if (flags & MOVED_LAST_STEP) {
-        flags &= ~MOVED_LAST_STEP;
-        _SimData[to_flat(id)] = set_flags(cell, flags);
-        
+    if (has_flag(cell, MOVED_LAST_STEP)) {
+        set_cell_data(id, clear_flag(cell, MOVED_LAST_STEP));
         return;
     }
     
@@ -129,12 +140,21 @@ void evaluate_move(uint2 id) {
     const bool move_y = should_move(y_vel);
     
     // Try to execute a vertical move.
+    // Occasionally prefer diagonal over straight-down to break up column patterns during freefall.
+    // Works regardless of drag since it acts on movement direction, not velocity.
     if (move_y) {
         const int dir = sign(y_vel);
-        const int side = (hash(id, _SimFrame) & 1) == 0 ? -1 : 1;
-        
-        if (try_move(id, id + int2(0, dir), cell)) return;
-        if (try_move(id, id + int2(side, dir), cell)) return;
+        const uint h = hash(id, _SimFrame);
+        const int side = (h & 1) == 0 ? -1 : 1;
+        const bool diagonal_first = ((h >> 2) & 3) == 0;
+
+        if (diagonal_first) {
+            if (try_move(id, id + int2(side, dir), cell)) return;
+            if (try_move(id, id + int2(0, dir), cell)) return;
+        } else {
+            if (try_move(id, id + int2(0, dir), cell)) return;
+            if (try_move(id, id + int2(side, dir), cell)) return;
+        }
         if (try_move(id, id + int2(-side, dir), cell)) return;
     }
     
@@ -144,19 +164,20 @@ void evaluate_move(uint2 id) {
         if (try_move(id, id + int2(dir, 0), cell)) return;
     }
     
-    // Fluid lateral spread: only when resting on a surface (not free-falling).
-    // Prevents falling water from spraying sideways while still allowing
-    // pooled water to spread and find its level.
-    if (is_fluid(get_material(cell))) {
-        int2 below = id + int2(0, -1);
-        bool supported = !in_bounds(below) ||
-                         get_material(_SimData[to_flat(below)]) != ID_EMPTY;
+    // Fluid lateral spread via Bresenham gating on fluidity.
+    // Higher fluidity means more spread attempts per frame.
+    // Only when resting on a surface (or ceiling for gases) to prevent in-flight lateral spray.
+    if (should_move(mat.fluidity)) {
+        int grav_dir = mat.weight >= 0 ? -1 : 1;
+        int2 ahead = id + int2(0, grav_dir);
+        bool supported = !in_bounds(ahead) ||
+                         !is_empty(get_cell_data(ahead));
 
-        if (supported) {
-            int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
-
-            if (try_move(id, id + int2(side,  0), cell)) return;
-            if (try_move(id, id + int2(-side, 0), cell)) return;
+        // Only spread when truly supported — the cell below must be
+        // denser (can't displace it), not just non-empty.
+        if (supported && get_mat_props(get_cell_data(ahead)).density >= mat.density) {
+            int side = (hash(id, _SimStep) & 1) == 0 ? -1 : 1;
+            try_move(id, id + int2(side, 0), cell);
         }
     }
 }
@@ -170,23 +191,19 @@ void Paint(uint3 id : SV_DispatchThreadID) {
     );
     
     // Skip if out of bounds or not in paint circle.
-    const bool in_bounds = cell.x >= 0 && cell.x < _SimWidth &&
-                           cell.y >= 0 && cell.y < _SimHeight;
-    
     const int dx = cell.x - _PaintX;
     const int dy = cell.y - _PaintY;
-    const int r2 = _PaintR * _PaintR;
     const int d2 = dx * dx + dy * dy;
-    
-    const bool in_circle = d2 <= r2;
-    
-    if (!in_bounds || !in_circle) {
+
+    if (cell.x < 0 || cell.x >= _SimWidth ||
+        cell.y < 0 || cell.y >= _SimHeight ||
+        d2 > _PaintR * _PaintR) {
         return;
     }
 
     // In non-replacement mode, only fill empty cells (erase always works).
     if (!_PaintReplace && _PaintType != ID_EMPTY) {
-        if (get_material(_SimData[to_flat(cell)]) != ID_EMPTY) {
+        if (!is_empty(_SimData[to_flat(cell)])) {
             return;
         }
     }
@@ -200,23 +217,18 @@ void Gravity(uint3 id : SV_DispatchThreadID) {
         return;
     }
     
-    uint cell = _SimData[to_flat(id.xy)];
-    const uint mat = get_material(cell);
+    uint cell = get_cell_data(id.xy);
+    const MaterialProperties mat = get_mat_props(cell);
     
-    if (mat == ID_EMPTY) {
+    if (is_empty(cell)) {
         return;
     }
     
     // Get flags and check if we need to clear velocity.
-    uint flags = get_flags(cell);
-    
-    const bool moved = (flags & MOVED_LAST_FRAME) != 0;
+    const bool moved = has_flag(cell, MOVED_LAST_FRAME);
     
     // Clear moved flags since this kernel runs at the start of a new frame.
-    flags &= ~MOVED_LAST_STEP;
-    flags &= ~MOVED_LAST_FRAME;
-    
-    cell = set_flags(cell, flags);
+    cell = clear_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
     
     // Velocity gets reset if a particle never moved last frame.
     if (!moved) {
@@ -224,11 +236,19 @@ void Gravity(uint3 id : SV_DispatchThreadID) {
         cell = set_y_vel(cell, 0);
     }
     
-    // Add gravity and clamp to per-material terminal velocity.
-    int term = get_terminal_vel(mat);
-    int y_vel = get_y_vel(cell) - get_gravity(mat);
-    y_vel = clamp(y_vel, -term, term);
-    
+    int x_vel = get_x_vel(cell);
+    int y_vel = get_y_vel(cell);
+
+    // Global gravity scaled by per-material weight.
+    // weight=256: normal, weight=0: weightless, negative: buoyant.
+    // Drag decelerates proportionally — terminal velocity emerges
+    // naturally from the gravity/drag equilibrium.
+    y_vel -= _Gravity * mat.weight / 256;
+    x_vel = apply_drag(x_vel, (int)mat.drag);
+    y_vel = apply_drag(y_vel, (int)mat.drag);
+    y_vel = clamp(y_vel, -127, 127);
+
+    cell = set_x_vel(cell, x_vel);
     _SimData[to_flat(id.xy)] = set_y_vel(cell, y_vel);
 }
 
@@ -253,18 +273,14 @@ void Simulate(uint3 id : SV_DispatchThreadID) {
 
 [numthreads(8,8,1)]
 void Visualize(uint3 id : SV_DispatchThreadID) {
-    // Skip if out of bounds.
-    const bool in_bounds = id.x < _SimWidth &&
-                           id.y < _SimHeight;
-    
-    if (!in_bounds) {
+    if (id.x >= (uint)_SimWidth || id.y >= (uint)_SimHeight) {
         return;
     }
     
-    const uint cell = _SimData[to_flat(id.xy)];
-    const uint mat = get_material(cell);
+    const uint cell = get_cell_data(id.xy);
+    const MaterialProperties mat = get_mat_props(cell);
 
-    _VisTexture[id.xy] = get_color(mat);
+    _VisTexture[id.xy] = mat.color;
 
     // Draw cursor ring in the selected material color.
     if (_CursorR > 0) {
@@ -274,7 +290,7 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
         int r_inner = _CursorR - 1;
 
         if (d2 <= _CursorR * _CursorR && d2 >= r_inner * r_inner) {
-            float4 base_color = get_color(_CursorMat);
+            float4 base_color = _Materials[_CursorMat].color;
             _VisTexture[id.xy] = float4(saturate(base_color.rgb + 0.3), 1);
         }
     }

@@ -1,6 +1,9 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.UI;
+using FallingSand.Scripts;
 
 namespace FallingSand {
     /// <summary>
@@ -9,8 +12,8 @@ namespace FallingSand {
     /// Controls:
     ///   Left click        – paint selected material
     ///   Right click       – erase
-    ///   Scroll wheel      – cycle material (Stone → Sand → Water)
-    ///   Shift + scroll    – change brush radius
+    ///   Scroll wheel      – change brush radius
+    ///   Shift + scroll    – cycle material
     ///   Insert            – toggle replacement paint mode
     /// </summary>
     public class SandSimulation : MonoBehaviour {
@@ -19,7 +22,15 @@ namespace FallingSand {
         [SerializeField] private int _paintRadiusMin = 1;
         [SerializeField] private int _paintRadiusMax = 50;
 
+        [Header("Materials")]
+        [SerializeField] private MaterialDefinition[] _materials = {
+            new() { Name = "Stone", Fluidity = 0,  Density = 255, Weight = 0,    Drag = 0,   Color = new Color(0.5f, 0.5f, 0.5f) },
+            new() { Name = "Sand",  Fluidity = 0,  Density = 200, Weight = 256,  Drag = 16,  Color = new Color(0.9f, 0.8f, 0.5f) },
+            new() { Name = "Water", Fluidity = 64, Density = 100, Weight = 256,  Drag = 32,  Color = new Color(0.2f, 0.4f, 0.9f) },
+        };
+
         [Header("Simulation")]
+        [SerializeField] private int _gravity = 16;
         [SerializeField] private int _simScale = 4;
         [SerializeField] private int _simSteps = 256;
         [SerializeField] private ComputeShader _compute;
@@ -28,9 +39,9 @@ namespace FallingSand {
         [SerializeField] private RawImage _tempVis;
         [SerializeField] private Text _hudText;
 
-        // Available paint materials and their shader IDs.
-        private static readonly string[] MaterialNames = { "Stone", "Sand", "Water" };
-        private static readonly int[] MaterialIDs = { 1, 2, 3 };
+        // The empty material is always index 0 in the GPU buffer.
+        // Inspector materials follow starting at index 1.
+        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, default);
 
         // Paint state.
         private int _selectedIndex;
@@ -38,14 +49,16 @@ namespace FallingSand {
         private Vector2Int _lastPaintPos;
         private bool _wasPainting;
 
-        // FPS tracking.
+        // FPS and sim timing.
         private float _fpsTimer;
         private int _fpsCounter;
         private int _fpsDisplay;
+        private float _simTimeMs;
 
         // Resources.
         private int _simFrame;
         private ComputeBuffer _simData;
+        private ComputeBuffer _materialBuffer;
         private RenderTexture _visTexture;
 
         // Kernel handles.
@@ -72,7 +85,9 @@ namespace FallingSand {
         private static readonly int ID_SIM_STEP      = Shader.PropertyToID("_SimStep");
         private static readonly int ID_SIM_FRAME     = Shader.PropertyToID("_SimFrame");
         private static readonly int ID_SIM_PASS      = Shader.PropertyToID("_SimPass");
+        private static readonly int ID_GRAVITY       = Shader.PropertyToID("_Gravity");
 
+        private static readonly int ID_MATERIALS      = Shader.PropertyToID("_Materials");
         private static readonly int ID_SIM_DATA      = Shader.PropertyToID("_SimData");
         private static readonly int ID_VIS_TEXTURE   = Shader.PropertyToID("_VisTexture");
 
@@ -81,6 +96,8 @@ namespace FallingSand {
             KERNEL_GRAVITY = _compute.FindKernel("Gravity");
             KERNEL_SIM     = _compute.FindKernel("Simulate");
             KERNEL_VIS     = _compute.FindKernel("Visualize");
+
+            UploadMaterials();
 
             var simWidth  = Screen.width / _simScale;
             var simHeight = Screen.height / _simScale;
@@ -99,6 +116,7 @@ namespace FallingSand {
 
         private void OnDestroy() {
             if (_simData.IsValid()) _simData.Release();
+            if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
             if (_visTexture) _visTexture.Release();
         }
 
@@ -117,11 +135,11 @@ namespace FallingSand {
                 var shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
                 if (shiftHeld) {
+                    var count = _materials.Length;
+                    _selectedIndex = ((_selectedIndex + (scroll > 0 ? 1 : -1)) % count + count) % count;
+                } else {
                     _paintRadius += scroll > 0 ? 1 : -1;
                     _paintRadius = Mathf.Clamp(_paintRadius, _paintRadiusMin, _paintRadiusMax);
-                } else {
-                    var count = MaterialIDs.Length;
-                    _selectedIndex = ((_selectedIndex + (scroll > 0 ? 1 : -1)) % count + count) % count;
                 }
             }
 
@@ -139,7 +157,7 @@ namespace FallingSand {
                     Mathf.FloorToInt(mousePos.x) / _simScale,
                     Mathf.FloorToInt(mousePos.y) / _simScale
                 );
-                var mat = erasing ? 0 : MaterialIDs[_selectedIndex];
+                var mat = erasing ? 0 : _selectedIndex + 1;
 
                 if (_wasPainting) {
                     PaintLine(_lastPaintPos, pos, _paintRadius, mat);
@@ -162,9 +180,9 @@ namespace FallingSand {
             }
 
             if (_hudText) {
-                var matName = MaterialNames[_selectedIndex];
+                var matName = _materials[_selectedIndex].Name;
                 var mode = _paintReplace ? "Replace" : "Fill";
-                _hudText.text = $"{_fpsDisplay} FPS\n{matName} ({mode})";
+                _hudText.text = $"{_fpsDisplay} FPS | {_visTexture.width}x{_visTexture.height} | sim {_simTimeMs:F2}ms\n{matName} ({mode})";
             }
         }
 
@@ -183,8 +201,11 @@ namespace FallingSand {
             _compute.SetInt(ID_SIM_HEIGHT, _visTexture.height);
             _compute.SetInt(ID_SIM_STEPS, _simSteps);
             _compute.SetInt(ID_SIM_FRAME, _simFrame);
+            _compute.SetInt(ID_GRAVITY, _gravity);
 
-            // Simulate.
+            // Simulate and time the dispatch cost.
+            var sw = Stopwatch.StartNew();
+
             ApplyGravity();
 
             for (var i = 0; i < _simSteps; i++) {
@@ -193,6 +214,9 @@ namespace FallingSand {
                 Simulate(first, i);
                 Simulate(1 - first, i);
             }
+
+            sw.Stop();
+            _simTimeMs = (float)sw.Elapsed.TotalMilliseconds;
 
             // Visualize with cursor overlay.
             var cursorPos = Input.mousePosition;
@@ -243,6 +267,27 @@ namespace FallingSand {
             _compute.Dispatch(KERNEL_PAINT, groupsX, groupsY, 1);
         }
 
+        private void UploadMaterials() {
+            if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
+
+            var stride = Marshal.SizeOf<MaterialProperties>();
+            var count = _materials.Length + 1; // +1 for empty at index 0.
+            var data = new MaterialProperties[count];
+
+            data[0] = EmptyMaterial;
+            for (var i = 0; i < _materials.Length; i++) {
+                data[i + 1] = MaterialProperties.FromDefinition(_materials[i]);
+            }
+
+            _materialBuffer = new ComputeBuffer(count, stride);
+            _materialBuffer.SetData(data);
+
+            // Bind to all kernels that read _Materials.
+            _compute.SetBuffer(KERNEL_GRAVITY, ID_MATERIALS, _materialBuffer);
+            _compute.SetBuffer(KERNEL_SIM, ID_MATERIALS, _materialBuffer);
+            _compute.SetBuffer(KERNEL_VIS, ID_MATERIALS, _materialBuffer);
+        }
+
         private void ApplyGravity() {
             var groupsX = Mathf.CeilToInt((float)_visTexture.width / 8);
             var groupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
@@ -270,7 +315,7 @@ namespace FallingSand {
             _compute.SetInt(ID_CURSOR_X, cursorX);
             _compute.SetInt(ID_CURSOR_Y, cursorY);
             _compute.SetInt(ID_CURSOR_R, _paintRadius);
-            _compute.SetInt(ID_CURSOR_MAT, MaterialIDs[_selectedIndex]);
+            _compute.SetInt(ID_CURSOR_MAT, _selectedIndex + 1);
 
             _compute.SetBuffer(KERNEL_VIS, ID_SIM_DATA, _simData);
             _compute.SetTexture(KERNEL_VIS, ID_VIS_TEXTURE, _visTexture);

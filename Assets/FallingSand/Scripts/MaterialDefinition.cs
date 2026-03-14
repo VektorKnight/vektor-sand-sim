@@ -8,6 +8,8 @@ namespace FallingSand.Scripts {
     /// </summary>
     [Serializable]
     public class MaterialDefinition {
+        public string Name = "Material";
+
         /// <summary>
         /// Solids are zero, anything greater is a progressively less viscous fluid / gas.
         /// </summary>
@@ -21,19 +23,21 @@ namespace FallingSand.Scripts {
         public int Density = 127;
         
         /// <summary>
-        /// Acceleration from gravity for a particle.
-        /// A negative gravity will cause a particle to float upwards like a gas.
-        /// In a way simulates drag.
+        /// Scales global gravity for this material.
+        /// 256 = normal, 0 = weightless (e.g. stone), negative = buoyant (e.g. gas).
+        /// Terminal velocity emerges from the weight/drag balance.
         /// </summary>
-        [Range(-127, 127)]
-        public int Gravity = 16;
-        
+        [Range(-256, 256)]
+        public int Weight = 256;
+
         /// <summary>
-        /// Maximum possible vertical velocity for a particle.
+        /// Proportional velocity decay per frame (like air resistance).
+        /// Higher values = more deceleration = lower terminal velocity.
+        /// Applied toward zero on both axes.
         /// </summary>
-        [Range(0, 127)]
-        public int TerminalVel = 32;
-        
+        [Range(0, 255)]
+        public int Drag = 16;
+
         // Visual properties, currently just color.
         public Color Color = UnityEngine.Color.white;
     }

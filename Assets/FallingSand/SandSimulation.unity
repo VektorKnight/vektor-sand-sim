@@ -380,8 +380,45 @@ MonoBehaviour:
   _paintRadius: 8
   _paintRadiusMin: 1
   _paintRadiusMax: 50
-  _simScale: 2
-  _simSteps: 256
+  _materials:
+  - Name: Stone
+    Fluidity: 0
+    Density: 255
+    Gravity: 0
+    TerminalVel: 0
+    Color: {r: 0.38679248, g: 0.38679248, b: 0.38679248, a: 1}
+  - Name: Gravel
+    Fluidity: 0
+    Density: 220
+    Gravity: 32
+    TerminalVel: 64
+    Color: {r: 0.21698111, g: 0.21698111, b: 0.21698111, a: 1}
+  - Name: Sand
+    Fluidity: 0
+    Density: 200
+    Gravity: 16
+    TerminalVel: 32
+    Color: {r: 0.8207547, g: 0.5865165, b: 0.32907617, a: 1}
+  - Name: Water
+    Fluidity: 64
+    Density: 100
+    Gravity: 8
+    TerminalVel: 16
+    Color: {r: 0.14578143, g: 0.42099032, b: 0.7924528, a: 1}
+  - Name: Oil
+    Fluidity: 32
+    Density: 70
+    Gravity: 8
+    TerminalVel: 12
+    Color: {r: 0.43529412, g: 0.29143146, b: 0.23529412, a: 1}
+  - Name: Tar
+    Fluidity: 1
+    Density: 110
+    Gravity: 4
+    TerminalVel: 6
+    Color: {r: 0.1509434, g: 0.121573515, b: 0.11178356, a: 1}
+  _simScale: 3
+  _simSteps: 128
   _compute: {fileID: 7200000, guid: 729394d490e7540cba9d9ce75f2b9c43, type: 3}
   _tempVis: {fileID: 677317741}
   _hudText: {fileID: 1125722977}
@@ -553,8 +590,8 @@ Camera:
   m_GameObject: {fileID: 961739749}
   m_Enabled: 1
   serializedVersion: 2
-  m_ClearFlags: 1
-  m_BackGroundColor: {r: 0.19215687, g: 0.3019608, b: 0.4745098, a: 0}
+  m_ClearFlags: 2
+  m_BackGroundColor: {r: 0, g: 0, b: 0, a: 0}
   m_projectionMatrixMode: 1
   m_GateFitMode: 2
   m_FOVAxisMode: 0

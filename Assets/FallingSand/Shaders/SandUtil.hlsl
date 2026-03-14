@@ -16,68 +16,22 @@
 
 // Material IDs.
 #define ID_EMPTY 0
-#define ID_STONE 1
-#define ID_SAND 2
-#define ID_WATER 3
 
 // State flags.
 #define MOVED_LAST_STEP 1   // Cell was moved in a prior red/black pass this step.
 #define MOVED_LAST_FRAME 2  // Cell moved at least once during the previous frame.
 
-// Material properties struct mirrored from the C# side.
+// Material properties for a particle type.
+// Values are expected to be valid following sanitization on the C# side.
+// Note that the first index in the buffer is expected to be empty/air.
 struct MaterialProperties {
     uint fluidity;
     uint density;
-    int gravity;
-    uint terminal_vel;
-    
+    int weight;     // Scales global _Gravity. 256 = normal, 0 = weightless, negative = buoyant.
+    uint drag;      // Proportional velocity decay. Terminal vel emerges from weight/drag balance.
+
     float4 color;
 };
-
-bool is_fluid(uint id) {
-    switch (id) {
-        case ID_WATER: return true;
-        default: return false;
-    }
-}
-
-uint get_density(uint id) {
-    switch (id) {
-        case ID_EMPTY:  return 0;
-        case ID_STONE:  return 255;
-        case ID_SAND:   return 128;
-        case ID_WATER:  return 64;
-        default: return 0;
-    }
-}
-
-uint get_gravity(uint mat) {
-    switch (mat) {
-        case ID_EMPTY:  return 0;
-        case ID_STONE:  return 0;
-        case ID_SAND:   return 1;
-        case ID_WATER:  return 1;
-        default: return 0;
-    }
-}
-
-uint get_terminal_vel(uint mat) {
-    switch (mat) {
-        case ID_SAND:   return 32;
-        case ID_WATER:  return 16;
-        default: return 127;
-    }
-}
-
-float4 get_color(uint mat) {
-    switch (mat) {
-        case ID_EMPTY:  return float4(0,0,0,1);
-        case ID_STONE:  return float4(0.125, 0.125, 0.125, 1);
-        case ID_SAND:   return float4(0.5, 0.25, 0.1, 1);
-        case ID_WATER:  return float4(0.05, 0.15, 0.9, 1);
-        default: return float4(1, 0, 1, 1);
-    }
-}
 
 uint pack_i8(uint packed, int value, uint offset) {
     return (packed & ~(0xFF << offset)) | (((uint)value & 0xFF) << offset);
@@ -87,12 +41,12 @@ int unpack_i8(uint packed, uint offset) {
     return (int)(packed << (24 - offset)) >> 24;
 }
 
-uint get_material(uint cell) {
+uint get_mat_id(uint cell) {
     return cell & 0xF;
 }
 
-uint set_material(uint cell, uint id) {
-    return (cell & ~0xF) | (id & 0xF);
+bool is_empty(uint cell) {
+    return get_mat_id(cell) == ID_EMPTY;
 }
 
 uint get_flags(uint cell) {
@@ -101,6 +55,23 @@ uint get_flags(uint cell) {
 
 uint set_flags(uint cell, uint flags) {
     return (cell & ~(0xF << OFFSET_FLAGS)) | ((flags & 0xF) << OFFSET_FLAGS);
+}
+
+bool has_flag(uint cell, uint flag) {
+    return (get_flags(cell) & flag) != 0;
+}
+
+uint add_flag(uint cell, uint flag) {
+    return set_flags(cell, get_flags(cell) | flag);
+}
+
+uint clear_flag(uint cell, uint flag) {
+    return set_flags(cell, get_flags(cell) & ~flag);
+}
+
+uint add_vel(uint cell, int delta, uint offset) {
+    int vel = clamp(unpack_i8(cell, offset) + delta, -127, 127);
+    return pack_i8(cell, vel, offset);
 }
 
 int get_x_vel(uint cell) {
@@ -117,6 +88,25 @@ int get_y_vel(uint cell) {
 
 uint set_y_vel(uint cell, int vel) {
     return pack_i8(cell, vel, OFFSET_Y_VEL);
+}
+
+// Proportional drag: decays velocity toward zero scaled by magnitude.
+// Higher velocity = more drag removed, like air resistance.
+// Low velocities are naturally unaffected (integer truncation),
+// preventing drag from overpowering weak gravity.
+int apply_drag(int vel, int drag) {
+    if (vel == 0 || drag == 0) return vel;
+    int amount = abs(vel) * drag / 256;
+    if (amount == 0) return vel;
+    return vel > 0 ? max(vel - amount, 0) : min(vel + amount, 0);
+}
+
+uint add_x_vel(uint cell, int delta) {
+    return add_vel(cell, delta, OFFSET_X_VEL);
+}
+
+uint add_y_vel(uint cell, int delta) {
+    return add_vel(cell, delta, OFFSET_Y_VEL);
 }
 
 // lowbias32-based spatial hash (https://nullprogram.com/blog/2018/07/31/).
