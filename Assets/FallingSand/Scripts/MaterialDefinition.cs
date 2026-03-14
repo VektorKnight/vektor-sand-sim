@@ -38,7 +38,13 @@ namespace FallingSand.Scripts {
         [Range(0, 255)]
         public int Drag = 16;
 
-        // Visual properties, currently just color.
+        /// <summary>
+        /// Per-particle brightness spread. 0 = flat color, higher = more variation.
+        /// Each particle gets one of 4 brightness offsets set at paint time.
+        /// </summary>
+        [Range(0f, 1f)]
+        public float Variation = 0f;
+
         public Color Color = UnityEngine.Color.white;
     }
 }

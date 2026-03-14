@@ -41,7 +41,7 @@ namespace FallingSand {
 
         // The empty material is always index 0 in the GPU buffer.
         // Inspector materials follow starting at index 1.
-        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, default);
+        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, 0f, default);
 
         // Paint state.
         private int _selectedIndex;

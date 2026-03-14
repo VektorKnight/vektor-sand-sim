@@ -16,7 +16,8 @@ namespace FallingSand.Scripts {
         public readonly int Weight;
         public readonly uint Drag;
 
-        // Visual properties, currently just color.
+        // Visual properties.
+        public readonly float Variation;
         public readonly float4 Color;
 
         public MaterialProperties(
@@ -24,12 +25,14 @@ namespace FallingSand.Scripts {
             uint density,
             int weight,
             uint drag,
+            float variation,
             float4 color
         ) {
-            Fluidity = Math.Min(fluidity, 255);
-            Density  = Math.Min(density, 255);
-            Weight   = Math.Clamp(weight, -256, 256);
-            Drag     = Math.Min(drag, 255);
+            Fluidity  = Math.Min(fluidity, 255);
+            Density   = Math.Min(density, 255);
+            Weight    = Math.Clamp(weight, -256, 256);
+            Drag      = Math.Min(drag, 255);
+            Variation = Math.Clamp(variation, 0f, 1f);
 
             Color = color;
         }
@@ -41,6 +44,7 @@ namespace FallingSand.Scripts {
                 (uint)def.Density,
                 def.Weight,
                 (uint)def.Drag,
+                def.Variation,
                 new float4(linear.r, linear.g, linear.b, linear.a)
             );
         }

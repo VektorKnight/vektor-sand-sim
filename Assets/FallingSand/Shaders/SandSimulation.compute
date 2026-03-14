@@ -228,7 +228,9 @@ void Paint(uint3 id : SV_DispatchThreadID) {
         }
     }
 
-    set_cell_data(cell, _PaintType);
+    // Set a random color variant per particle based on its position.
+    const uint variant = hash(cell, 0) & 0x3;
+    set_cell_data(cell, set_variant(_PaintType, variant));
 }
 
 // ============================================================================
@@ -312,7 +314,10 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
     const uint cell = get_cell_data(id.xy);
     const MaterialProperties mat = get_mat_props(cell);
 
-    _VisTexture[id.xy] = mat.color;
+    // Apply per-particle color variation. The 2-bit variant (0-3) maps to
+    // a brightness offset centered around the base color.
+    const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
+    _VisTexture[id.xy] = float4(saturate(mat.color.rgb + offset), mat.color.a);
 
     // Draw cursor ring in the selected material color.
     if (_CursorR > 0) {

@@ -6,13 +6,15 @@
 //   [7:4]   State flags   (4 bits, see MOVED_* constants)
 //   [15:8]  X velocity    (8-bit signed, -127 to 127)
 //   [23:16] Y velocity    (8-bit signed, -127 to 127)
-//   [31:24] Unused
+//   [25:24] Color variant (2 bits, 0-3, set at paint time)
+//   [31:26] Unused
 // ============================================================================
 
 // Bit offsets for packed cell fields.
 #define OFFSET_FLAGS 4
 #define OFFSET_X_VEL 8
 #define OFFSET_Y_VEL 16
+#define OFFSET_VARIANT 24
 
 // Material IDs.
 #define ID_EMPTY 0
@@ -30,6 +32,7 @@ struct MaterialProperties {
     int weight;     // Scales global _Gravity. 256 = normal, 0 = weightless, negative = buoyant.
     uint drag;      // Proportional velocity decay. Terminal vel emerges from weight/drag balance.
 
+    float variation; // Brightness spread for color variants. 0 = flat, >0 = per-particle variation.
     float4 color;
 };
 
@@ -88,6 +91,14 @@ int get_y_vel(uint cell) {
 
 uint set_y_vel(uint cell, int vel) {
     return pack_i8(cell, vel, OFFSET_Y_VEL);
+}
+
+uint get_variant(uint cell) {
+    return (cell >> OFFSET_VARIANT) & 0x3;
+}
+
+uint set_variant(uint cell, uint variant) {
+    return (cell & ~(0x3 << OFFSET_VARIANT)) | ((variant & 0x3) << OFFSET_VARIANT);
 }
 
 // Proportional drag: decays velocity toward zero scaled by magnitude.
