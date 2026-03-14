@@ -53,7 +53,6 @@ namespace FallingSand {
         private float _fpsTimer;
         private int _fpsCounter;
         private int _fpsDisplay;
-        private float _simTimeMs;
 
         // Resources.
         private int _simFrame;
@@ -63,7 +62,7 @@ namespace FallingSand {
 
         // Kernel handles.
         private int KERNEL_PAINT;
-        private int KERNEL_GRAVITY;
+        private int KERNEL_PREPARE_FRAME;
         private int KERNEL_SIM;
         private int KERNEL_VIS;
 
@@ -86,14 +85,13 @@ namespace FallingSand {
         private static readonly int ID_SIM_FRAME     = Shader.PropertyToID("_SimFrame");
         private static readonly int ID_SIM_PASS      = Shader.PropertyToID("_SimPass");
         private static readonly int ID_GRAVITY       = Shader.PropertyToID("_Gravity");
-
         private static readonly int ID_MATERIALS      = Shader.PropertyToID("_Materials");
         private static readonly int ID_SIM_DATA      = Shader.PropertyToID("_SimData");
         private static readonly int ID_VIS_TEXTURE   = Shader.PropertyToID("_VisTexture");
 
         private void Start() {
             KERNEL_PAINT   = _compute.FindKernel("Paint");
-            KERNEL_GRAVITY = _compute.FindKernel("Gravity");
+            KERNEL_PREPARE_FRAME = _compute.FindKernel("PrepareFrame");
             KERNEL_SIM     = _compute.FindKernel("Simulate");
             KERNEL_VIS     = _compute.FindKernel("Visualize");
 
@@ -182,7 +180,7 @@ namespace FallingSand {
             if (_hudText) {
                 var matName = _materials[_selectedIndex].Name;
                 var mode = _paintReplace ? "Replace" : "Fill";
-                _hudText.text = $"{_fpsDisplay} FPS | {_visTexture.width}x{_visTexture.height} | sim {_simTimeMs:F2}ms\n{matName} ({mode})";
+                _hudText.text = $"{_fpsDisplay} FPS\n{_visTexture.width}x{_visTexture.height}\n{matName} ({mode})";
             }
         }
 
@@ -203,20 +201,15 @@ namespace FallingSand {
             _compute.SetInt(ID_SIM_FRAME, _simFrame);
             _compute.SetInt(ID_GRAVITY, _gravity);
 
-            // Simulate and time the dispatch cost.
-            var sw = Stopwatch.StartNew();
-
-            ApplyGravity();
+            PrepareFrame();
 
             for (var i = 0; i < _simSteps; i++) {
-                // Alternate which checkerboard half gets first-mover advantage.
-                var first = (_simFrame + i) & 1;
-                Simulate(first, i);
-                Simulate(1 - first, i);
+                // Four-color tiling: rotate pass order each step to prevent
+                // systematic priority bias between the four quadrants.
+                var offset = (_simFrame * _simSteps + i) & 3;
+                for (var p = 0; p < 4; p++)
+                    Simulate((p + offset) & 3, i);
             }
-
-            sw.Stop();
-            _simTimeMs = (float)sw.Elapsed.TotalMilliseconds;
 
             // Visualize with cursor overlay.
             var cursorPos = Input.mousePosition;
@@ -283,23 +276,23 @@ namespace FallingSand {
             _materialBuffer.SetData(data);
 
             // Bind to all kernels that read _Materials.
-            _compute.SetBuffer(KERNEL_GRAVITY, ID_MATERIALS, _materialBuffer);
+            _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_SIM, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_VIS, ID_MATERIALS, _materialBuffer);
         }
 
-        private void ApplyGravity() {
+        private void PrepareFrame() {
             var groupsX = Mathf.CeilToInt((float)_visTexture.width / 8);
             var groupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
 
-            _compute.SetBuffer(KERNEL_GRAVITY, ID_SIM_DATA, _simData);
-            _compute.Dispatch(KERNEL_GRAVITY, groupsX, groupsY, 1);
+            _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_SIM_DATA, _simData);
+            _compute.Dispatch(KERNEL_PREPARE_FRAME, groupsX, groupsY, 1);
         }
 
         private void Simulate(int pass, int step) {
             // Half-width dispatch for the red/black checkerboard pattern.
-            var groupsX = Mathf.CeilToInt((float)_visTexture.width / 2 / 8);
-            var groupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
+            var groupsX = Mathf.CeilToInt((float)_visTexture.width / 2f / 8);
+            var groupsY = Mathf.CeilToInt((float)_visTexture.height / 2f / 8);
 
             _compute.SetInt(ID_SIM_STEP, step);
             _compute.SetInt(ID_SIM_PASS, pass);

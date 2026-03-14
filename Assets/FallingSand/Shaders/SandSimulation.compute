@@ -1,23 +1,30 @@
 #include "SandUtil.hlsl"
 
 // ============================================================================
-// GPU falling-sand simulation using a single-buffer, red/black checkerboard
+// GPU falling-sand simulation using a single-buffer, four-color tiling
 // scheme with compare-and-swap (CAS) for thread-safe cell movement.
 //
 // Frame execution order (driven by SandSimulation.cs):
 //   1. Paint     – write user input into the grid
-//   2. Gravity   – apply gravity, clear per-frame flags, reset stalled velocity
-//   3. Simulate  – _SimSteps iterations × 2 passes (red, black) of movement
+//   2. PrepareFrame – clear flags, reset stalled velocity, apply gravity and drag
+//   3. Simulate  – _SimSteps iterations × 4 passes (red, green, blue, yellow) of movement
 //   4. Visualize – write material colors to the output texture
 //
-// Movement uses Bresenham-style velocity stepping.
+// Movement and other timing-based behaviors use Bresenham-style gating to get
+// nice behavior over the high step rate.
 //
-// The red/black checkerboard ensures no two horizontally-adjacent cells are
-// evaluated in the same pass, reducing data races on the shared buffer.
+// The four-color tiling (2x2 pattern, 4 passes) ensures no two cells within
+// Chebyshev distance 1 are evaluated in the same pass, eliminating all
+// neighbor-to-neighbor data races including diagonals. Cardinal neighbor contention
+// is cleanly solved with a single CAS.
+//
+// A nine-color pattern removes all neighbor conflicts and atomics on paper but
+// then requires nine passes instead of four. Given the atomics don't seem to be
+// major bottleneck, I haven't bothered testing other patterns yet.
 // ============================================================================
 
 #pragma kernel Paint
-#pragma kernel Gravity
+#pragma kernel PrepareFrame
 #pragma kernel Simulate
 #pragma kernel Visualize
 
@@ -40,30 +47,38 @@ int _SimHeight; // Y dimension of the sim.
 int _SimSteps;  // Total number of steps per-frame.
 int _SimStep;   // Current step within a frame.
 int _SimFrame;  // Current simulation frame.
-int _SimPass;   // Red or black on this step.
+int _SimPass;   // Four-color pass index (0-3) on this step.
 int _Gravity;   // Global downward acceleration. Per-material weight scales this.
 
+// Simulation data buffers.
 StructuredBuffer<MaterialProperties> _Materials;
 RWStructuredBuffer<uint> _SimData;
 RWTexture2D<float4> _VisTexture;
 
+// Convert a 2D index to 1D buffer.
 int to_flat(int2 i) {
     return i.x + i.y * _SimWidth;
 }
 
+// Determines if a given position is in-bounds.
 bool in_bounds(int2 id) {
     return id.x >= 0 && id.x < _SimWidth &&
            id.y >= 0 && id.y < _SimHeight;
 }
 
+// Fetch the material properties for a given cell by its ID.
 MaterialProperties get_mat_props(uint cell) {
     return _Materials[get_mat_id(cell)];
 }
 
+// Fetch data for a cell at a given position.
+// Expected to be within bounds.
 uint get_cell_data(int2 id) {
     return _SimData[to_flat(id)];
 }
 
+// Set data for a cell at a given position.
+// Expected to be within bounds.
 void set_cell_data(int2 id, uint data) {
     _SimData[to_flat(id)] = data;
 }
@@ -71,50 +86,43 @@ void set_cell_data(int2 id, uint data) {
 // Bresenham-style gating.
 // Distributes move attempts evenly across _SimSteps.
 // Returns true on steps where the scaled position crosses an integer boundary.
-bool should_move(int vel) {
+bool bresenham(int vel) {
     float steps = (float)_SimSteps;
     return floor(_SimStep * vel / steps) !=
            floor((_SimStep - 1) * vel / steps);
 }
 
+// Attempts to execute a desired move while handling neighbor contention between threads with an atomic CAS.
 bool try_move(int2 from, int2 to, uint cell) {
     // Delete particles that leave the grid.
+    // TODO: Make this a toggle routed to the user?
     if (!in_bounds(to)) {
         set_cell_data(from, ID_EMPTY);
         return true;
     }
     
-    // Extract properties to compare.
-    uint cell_to = get_cell_data(to);
-    
-    const MaterialProperties mat_from   = get_mat_props(cell);
-    const MaterialProperties mat_to     = get_mat_props(cell_to);
-    
-    // Can move if destination is air or density is greater.
-    const bool can_move = mat_from.density > mat_to.density;
-    
-    if (!can_move) {
-        return false;
+    const uint cell_to = get_cell_data(to);
+
+    if (!is_empty(cell_to)) {
+        // Density swap allowed in all directions. At least one must be a fluid.
+        // Four-color tiling guarantees all 8 neighbors are on different passes,
+        // so no same-pass thread can write to our source position.
+        const MaterialProperties mat_from = get_mat_props(cell);
+        const MaterialProperties mat_to   = get_mat_props(cell_to);
+
+        if (mat_from.fluidity == 0 && mat_to.fluidity == 0) return false;
+        if (mat_from.density <= mat_to.density) return false;
     }
-    
-    // Set the moved flags for red/black and frame velocity tracking.
-    // These will only be set in the actual data if the move succeeds.
-    // We want to make sure we clear the replaced cell's flag as well.
-    const uint original_to = cell_to;
-    const uint cell_unmodified = cell;
 
-    cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
-    cell_to = clear_flag(cell_to, MOVED_LAST_STEP);
+    const uint flagged_cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
+    const uint flagged_to  = clear_flag(cell_to, MOVED_LAST_STEP);
 
-    // CAS the destination to try and atomically replace cell_to with our cell data.
-    // If another thread modified the destination first, we skip this move.
+    // Two same-pass cells can target the cardinal neighbor so a CAS is required.
+    // The source write is non-atomic as four-color tiling guarantees no same-pass thread is adjacent to us.
     int original;
-    InterlockedCompareExchange(_SimData[to_flat(to)], original_to, cell, original);
-    if ((uint)original == original_to) {
-        // CAS the source too. Prevents duplication when a same-pass diagonal
-        // neighbor swaps into our cell between the destination CAS and this write.
-        int orig_from;
-        InterlockedCompareExchange(_SimData[to_flat(from)], cell_unmodified, cell_to, orig_from);
+    InterlockedCompareExchange(_SimData[to_flat(to)], cell_to, flagged_cell, original);
+    if ((uint)original == cell_to) {
+        set_cell_data(from, flagged_to);
         return true;
     }
 
@@ -125,13 +133,14 @@ bool try_move(int2 from, int2 to, uint cell) {
 void evaluate_move(uint2 id) {
     const uint cell = get_cell_data(id);
     const MaterialProperties mat = get_mat_props(cell);
-
+    
+    // Early out on empty cells.
     if (is_empty(cell)) {
         return;
     }
 
     // If the cell was moved in a previous pass, clear flag and skip.
-    // Prevents the red/black passes from moving a cell repeatedly.
+    // Prevents the four-color passes from moving a cell repeatedly.
     if (has_flag(cell, MOVED_LAST_STEP)) {
         set_cell_data(id, clear_flag(cell, MOVED_LAST_STEP));
         return;
@@ -139,11 +148,12 @@ void evaluate_move(uint2 id) {
     
     // Fetch velocities and determine if we should move on each axis.
     // Successful moves early out with the expectation that other moves will occur in subsequent steps.
+    // Everything eventually works out over the total steps per-frame thanks to the Bresenham gating.
     const int x_vel = get_x_vel(cell);
     const int y_vel = get_y_vel(cell);
     
-    const bool move_x = should_move(x_vel);
-    const bool move_y = should_move(y_vel);
+    const bool move_x = bresenham(x_vel);
+    const bool move_y = bresenham(y_vel);
     
     // Try to execute a vertical move.
     // Occasionally prefer diagonal over straight-down to break up column patterns during freefall.
@@ -165,34 +175,32 @@ void evaluate_move(uint2 id) {
         if (try_move(id, id + int2(-side, dir), cell)) return;
     }
     
-    // Try to execute lateral move.
+    // Try to execute a lateral move.
     if (move_x) {
-        int dir = sign(x_vel);
-        if (try_move(id, id + int2(dir, 0), cell)) return;
+        if (try_move(id, id + int2(sign(x_vel), 0), cell)) return;
     }
     
     // Fluid lateral spread via Bresenham gating on fluidity.
     // Higher fluidity means more spread attempts per frame.
     // Only when resting on a surface (or ceiling for gases) to prevent in-flight lateral spray.
-    if (should_move(mat.fluidity)) {
-        int grav_dir = mat.weight >= 0 ? -1 : 1;
-        int2 ahead = id + int2(0, grav_dir);
-        bool supported = !in_bounds(ahead) ||
-                         !is_empty(get_cell_data(ahead));
+    if (bresenham(mat.fluidity)) {
+        const int grav_dir = mat.weight >= 0 ? -1 : 1;
+        const int2 ahead = id + int2(0, grav_dir);
+        const bool supported = !in_bounds(ahead) ||
+                               !is_empty(get_cell_data(ahead));
 
-        // Only spread when truly supported — the cell below must be
-        // denser (can't displace it), not just non-empty.
+        // Only spread when truly supported.
+        // The cell below must be denser, not just non-empty.
         if (supported && get_mat_props(get_cell_data(ahead)).density >= mat.density) {
-            int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
-            int2 target = id + int2(side, 0);
-            uint target_cell = get_cell_data(target);
-            // Only spread into empty cells or other fluids, not solids.
-            if (is_empty(target_cell) || get_mat_props(target_cell).fluidity > 0)
-                try_move(id, target, cell);
+            const int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
+            try_move(id, id + int2(side, 0), cell);
         }
     }
 }
 
+// ============================================================================
+// Handles painting of new particles into the simulation.
+// ============================================================================
 [numthreads(8,8,1)]
 void Paint(uint3 id : SV_DispatchThreadID) {
     // Determine paint cell from thread ID.
@@ -212,76 +220,89 @@ void Paint(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
-    // In non-replacement mode, only fill empty cells (erase always works).
+    // Only set empty cells if we're not in replace mode.
+    // Erasing (painting empty) always replaces.
     if (!_PaintReplace && _PaintType != ID_EMPTY) {
-        if (!is_empty(_SimData[to_flat(cell)])) {
+        if (!is_empty(get_cell_data(cell))) {
             return;
         }
     }
 
-    _SimData[to_flat(cell)] = _PaintType;
+    set_cell_data(cell, _PaintType);
 }
 
+// ============================================================================
+// Runs once per frame before simulation steps. Clears per-frame movement flags,
+// resets velocity on stalled particles, and applies gravity and drag.
+// ============================================================================
 [numthreads(8,8,1)]
-void Gravity(uint3 id : SV_DispatchThreadID) {
+void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     if (!in_bounds(id.xy)) {
         return;
     }
-    
+
+    // Fetch cell data and material propertoes.
     uint cell = get_cell_data(id.xy);
     const MaterialProperties mat = get_mat_props(cell);
-    
+
     if (is_empty(cell)) {
         return;
     }
-    
-    // Get flags and check if we need to clear velocity.
+
+    // A particle that never moved last frame is considered stalled.
     const bool moved = has_flag(cell, MOVED_LAST_FRAME);
-    
-    // Clear moved flags since this kernel runs at the start of a new frame.
+
+    // Clear both flags for the new frame.
     cell = clear_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
-    
-    // Velocity gets reset if a particle never moved last frame.
+
+    // Stalled particles get their velocity zeroed out so they don't
+    // accumulate speed while stuck against a surface.
     if (!moved) {
         cell = set_x_vel(cell, 0);
         cell = set_y_vel(cell, 0);
     }
-    
+
     int x_vel = get_x_vel(cell);
     int y_vel = get_y_vel(cell);
 
-    // Global gravity scaled by per-material weight.
+    // Apply gravity scaled by per-material weight.
     // weight=256: normal, weight=0: weightless, negative: buoyant.
-    // Drag decelerates proportionally — terminal velocity emerges
-    // naturally from the gravity/drag equilibrium.
     y_vel -= _Gravity * mat.weight / 256;
+
+    // Apply drag on both axes.
     x_vel = apply_drag(x_vel, (int)mat.drag);
     y_vel = apply_drag(y_vel, (int)mat.drag);
     y_vel = clamp(y_vel, -127, 127);
 
     cell = set_x_vel(cell, x_vel);
-    _SimData[to_flat(id.xy)] = set_y_vel(cell, y_vel);
+    set_cell_data(id.xy, set_y_vel(cell, y_vel));
 }
 
+// ============================================================================
+// Runs one pass of the four-color tiling movement step.
+// Maps each thread to one cell in the active quarter of the grid and evaluates
+// its movement. The thread-to-cell mapping flips horizontally each step to
+// cancel CAS serialization bias.
+// ============================================================================
 [numthreads(8,8,1)]
 void Simulate(uint3 id : SV_DispatchThreadID) {
-    // Red/black checkerboard offset.
-    const int offset_x = (id.y + (uint)_SimPass) & 1;
+    // Four-color tiling: each pass evaluates one quarter of the grid.
+    // A(0,0) B(1,0) C(0,1) D(1,1)
+    // All 8 neighbors of any cell are on different passes, so displacement in any direction is race-free.
+    const int half_w = (_SimWidth + 1) / 2;
+    const int mx = ((_SimStep + _SimFrame) & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
+    const int2 cell_id = int2(mx * 2 + (_SimPass & 1), (int)id.y * 2 + ((_SimPass >> 1) & 1));
 
-    // Reverse the thread-to-cell mapping on odd steps so that CAS
-    // serialization priority alternates direction each step, cancelling
-    // any hardware-induced lateral bias.
-    int half_w = (_SimWidth + 1) / 2;
-    int mx = ((_SimStep + _SimFrame) & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
-    const int2 cell = int2(mx * 2 + offset_x, (int)id.y);
-
-    if (cell.x < 0 || cell.x >= _SimWidth || cell.y >= _SimHeight || cell.y < 0) {
+    if (!in_bounds(cell_id)) {
         return;
     }
-    
-    evaluate_move(cell);
+
+    evaluate_move(cell_id);
 }
 
+// ============================================================================
+// Writes material colors to the output texture and draws a cursor ring overlay.
+// ============================================================================
 [numthreads(8,8,1)]
 void Visualize(uint3 id : SV_DispatchThreadID) {
     if (id.x >= (uint)_SimWidth || id.y >= (uint)_SimHeight) {
@@ -295,13 +316,13 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
 
     // Draw cursor ring in the selected material color.
     if (_CursorR > 0) {
-        int dx = (int)id.x - _CursorX;
-        int dy = (int)id.y - _CursorY;
-        int d2 = dx * dx + dy * dy;
-        int r_inner = _CursorR - 1;
+        const int dx = (int)id.x - _CursorX;
+        const int dy = (int)id.y - _CursorY;
+        const int d2 = dx * dx + dy * dy;
+        const int r_inner = _CursorR - 1;
 
         if (d2 <= _CursorR * _CursorR && d2 >= r_inner * r_inner) {
-            float4 base_color = _Materials[_CursorMat].color;
+            const float4 base_color = _Materials[_CursorMat].color;
             _VisTexture[id.xy] = float4(saturate(base_color.rgb + 0.3), 1);
         }
     }
