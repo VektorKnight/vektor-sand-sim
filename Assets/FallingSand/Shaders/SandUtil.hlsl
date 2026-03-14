@@ -33,6 +33,7 @@ struct MaterialProperties {
     uint drag;      // Proportional velocity decay. Terminal vel emerges from weight/drag balance.
 
     float variation; // Brightness spread for color variants. 0 = flat, >0 = per-particle variation.
+    float extinction; // Light absorption per cell for ray-marching. 0 = transparent, higher = more opaque.
     float4 color;
 };
 

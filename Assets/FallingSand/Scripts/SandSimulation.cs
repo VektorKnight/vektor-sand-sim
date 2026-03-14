@@ -38,10 +38,15 @@ namespace FallingSand {
         [Header("Visualization")]
         [SerializeField] private RawImage _tempVis;
         [SerializeField] private Text _hudText;
+        [SerializeField] private Vector2 _lightDirection = new(1f, 2f);
+        [SerializeField] private Color _lightColor = Color.white;
+        [SerializeField] [Range(0f, 5f)] private float _lightIntensity = 2f;
+        [SerializeField] private Color _ambientColor = new(0.1f, 0.1f, 0.1f, 1f);
+        [SerializeField] [Range(16, 512)] private int _lightMaxSteps = 64;
 
         // The empty material is always index 0 in the GPU buffer.
         // Inspector materials follow starting at index 1.
-        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, 0f, default);
+        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, 0f, 0f, default);
 
         // Paint state.
         private int _selectedIndex;
@@ -88,6 +93,12 @@ namespace FallingSand {
         private static readonly int ID_MATERIALS      = Shader.PropertyToID("_Materials");
         private static readonly int ID_SIM_DATA      = Shader.PropertyToID("_SimData");
         private static readonly int ID_VIS_TEXTURE   = Shader.PropertyToID("_VisTexture");
+
+        private static readonly int ID_LIGHT_DIR_X   = Shader.PropertyToID("_LightDirX");
+        private static readonly int ID_LIGHT_DIR_Y   = Shader.PropertyToID("_LightDirY");
+        private static readonly int ID_LIGHT_COLOR   = Shader.PropertyToID("_LightColor");
+        private static readonly int ID_AMBIENT_COLOR = Shader.PropertyToID("_AmbientColor");
+        private static readonly int ID_LIGHT_MAX_STEPS = Shader.PropertyToID("_LightMaxSteps");
 
         private void Start() {
             KERNEL_PAINT   = _compute.FindKernel("Paint");
@@ -309,6 +320,18 @@ namespace FallingSand {
             _compute.SetInt(ID_CURSOR_Y, cursorY);
             _compute.SetInt(ID_CURSOR_R, _paintRadius);
             _compute.SetInt(ID_CURSOR_MAT, _selectedIndex + 1);
+
+            // Convert float light direction to integer DDA direction.
+            // Scale by 16 to preserve slope precision, flip Y (sim Y=0 is bottom).
+            var dir = _lightDirection.normalized;
+            _compute.SetInt(ID_LIGHT_DIR_X, Mathf.RoundToInt(dir.x * 16));
+            _compute.SetInt(ID_LIGHT_DIR_Y, Mathf.RoundToInt(-dir.y * 16));
+
+            var lc = _lightColor.linear;
+            _compute.SetVector(ID_LIGHT_COLOR, new Vector4(lc.r * _lightIntensity, lc.g * _lightIntensity, lc.b * _lightIntensity, 1f));
+            var ac = _ambientColor.linear;
+            _compute.SetVector(ID_AMBIENT_COLOR, new Vector4(ac.r, ac.g, ac.b, 1f));
+            _compute.SetInt(ID_LIGHT_MAX_STEPS, _lightMaxSteps);
 
             _compute.SetBuffer(KERNEL_VIS, ID_SIM_DATA, _simData);
             _compute.SetTexture(KERNEL_VIS, ID_VIS_TEXTURE, _visTexture);

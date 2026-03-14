@@ -41,6 +41,13 @@ int _CursorY;
 int _CursorR;
 uint _CursorMat;
 
+// Lighting params for DDA ray-marching.
+int _LightDirX;
+int _LightDirY;
+float4 _LightColor;
+float4 _AmbientColor;
+int _LightMaxSteps;
+
 // Simulation params.
 int _SimWidth;  // X dimension of the sim.
 int _SimHeight; // Y dimension of the sim.
@@ -302,6 +309,48 @@ void Simulate(uint3 id : SV_DispatchThreadID) {
     evaluate_move(cell_id);
 }
 
+float3 march_dda(int2 start, int2 light_dir, float3 light_color, float3 ambient_color, int max_steps) {
+    float3 light = light_color;
+    int2 pos = start;
+    const int2 s = sign(light_dir);
+    const int2 a = abs(light_dir);
+
+    // Determine major/minor axes without dynamic vector indexing.
+    const bool x_major = a.x >= a.y;
+    const int major_len = x_major ? a.x : a.y;
+    const int minor_len = x_major ? a.y : a.x;
+
+    int accum = 0;
+
+    [loop]
+    for (int i = 0; i < max_steps; i++) {
+        // Step along major axis.
+        if (x_major) pos.x += s.x;
+        else         pos.y += s.y;
+
+        // Accumulate minor axis steps.
+        accum += minor_len;
+        if (accum >= major_len) {
+            if (x_major) pos.y += s.y;
+            else         pos.x += s.x;
+            accum -= major_len;
+        }
+
+        if (!in_bounds(pos)) {
+            break;
+        };
+        const MaterialProperties mat_pos = get_mat_props(get_cell_data(pos));
+
+        light *= exp(-mat_pos.extinction);
+
+        if (light.x + light.y + light.z < 0.01) {
+            break;
+        }
+    }
+
+    return max(light, ambient_color);
+}
+
 // ============================================================================
 // Writes material colors to the output texture and draws a cursor ring overlay.
 // ============================================================================
@@ -312,14 +361,8 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
     }
     
     const uint cell = get_cell_data(id.xy);
-    const MaterialProperties mat = get_mat_props(cell);
 
-    // Apply per-particle color variation. The 2-bit variant (0-3) maps to
-    // a brightness offset centered around the base color.
-    const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
-    _VisTexture[id.xy] = float4(saturate(mat.color.rgb + offset), mat.color.a);
-
-    // Draw cursor ring in the selected material color.
+    // Draw cursor ring over everything, including empty cells.
     if (_CursorR > 0) {
         const int dx = (int)id.x - _CursorX;
         const int dy = (int)id.y - _CursorY;
@@ -327,9 +370,32 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
         const int r_inner = _CursorR - 1;
 
         if (d2 <= _CursorR * _CursorR && d2 >= r_inner * r_inner) {
-            const float4 base_color = _Materials[_CursorMat].color;
-            _VisTexture[id.xy] = float4(saturate(base_color.rgb + 0.3), 1);
+            const float4 mat_color = _Materials[_CursorMat].color;
+            _VisTexture[id.xy] = float4(saturate(mat_color.rgb + 0.3), 1);
+            return;
         }
     }
+
+    // Empty cells are clear, skip the march.
+    if (is_empty(cell)) {
+        _VisTexture[id.xy] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    const MaterialProperties mat = get_mat_props(cell);
+
+    // Apply per-particle color variation. The 2-bit variant (0-3) maps to
+    // a brightness offset centered around the base color.
+    const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
+    float3 base_color = float3(saturate(mat.color.rgb + offset));
+
+    // March towards the light to determine final lit material colors.
+    const int2 light_dir = int2(_LightDirX, _LightDirY);
+    const float3 light_color = _LightColor.rgb;
+    const float3 ambient_color = _AmbientColor.rgb;
+
+    base_color *= march_dda(id.xy, light_dir, light_color, ambient_color, _LightMaxSteps);
+
+    _VisTexture[id.xy] = float4(base_color, 1);
 }
 

@@ -45,6 +45,13 @@ namespace FallingSand.Scripts {
         [Range(0f, 1f)]
         public float Variation = 0f;
 
+        /// <summary>
+        /// Light absorption per cell for ray-marching visualization.
+        /// 0 = fully transparent, higher = more opaque.
+        /// </summary>
+        [Range(0f, 10f)]
+        public float Extinction = 1f;
+
         public Color Color = UnityEngine.Color.white;
     }
 }
