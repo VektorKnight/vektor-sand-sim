@@ -384,41 +384,54 @@ MonoBehaviour:
   - Name: Stone
     Fluidity: 0
     Density: 255
-    Gravity: 0
-    TerminalVel: 0
+    Weight: 0
+    Drag: 0
     Color: {r: 0.38679248, g: 0.38679248, b: 0.38679248, a: 1}
   - Name: Gravel
     Fluidity: 0
-    Density: 220
-    Gravity: 32
-    TerminalVel: 64
+    Density: 200
+    Weight: 128
+    Drag: 96
     Color: {r: 0.21698111, g: 0.21698111, b: 0.21698111, a: 1}
   - Name: Sand
     Fluidity: 0
-    Density: 200
-    Gravity: 16
-    TerminalVel: 32
+    Density: 150
+    Weight: 128
+    Drag: 128
     Color: {r: 0.8207547, g: 0.5865165, b: 0.32907617, a: 1}
+  - Name: Snow
+    Fluidity: 0
+    Density: 50
+    Weight: 128
+    Drag: 192
+    Color: {r: 0.6367924, g: 0.94242585, b: 1, a: 1}
   - Name: Water
-    Fluidity: 64
+    Fluidity: 255
     Density: 100
-    Gravity: 8
-    TerminalVel: 16
+    Weight: 128
+    Drag: 128
     Color: {r: 0.14578143, g: 0.42099032, b: 0.7924528, a: 1}
   - Name: Oil
     Fluidity: 32
     Density: 70
-    Gravity: 8
-    TerminalVel: 12
+    Weight: 128
+    Drag: 128
     Color: {r: 0.43529412, g: 0.29143146, b: 0.23529412, a: 1}
   - Name: Tar
     Fluidity: 1
-    Density: 110
-    Gravity: 4
-    TerminalVel: 6
+    Density: 125
+    Weight: 128
+    Drag: 192
     Color: {r: 0.1509434, g: 0.121573515, b: 0.11178356, a: 1}
-  _simScale: 3
-  _simSteps: 128
+  - Name: Gas
+    Fluidity: 238
+    Density: 8
+    Weight: 256
+    Drag: 1
+    Color: {r: 0.745283, g: 0.5238074, b: 0.6270375, a: 1}
+  _gravity: 16
+  _simScale: 2
+  _simSteps: 256
   _compute: {fileID: 7200000, guid: 729394d490e7540cba9d9ce75f2b9c43, type: 3}
   _tempVis: {fileID: 677317741}
   _hudText: {fileID: 1125722977}
@@ -724,7 +737,7 @@ RectTransform:
   m_AnchorMin: {x: 0, y: 1}
   m_AnchorMax: {x: 0, y: 1}
   m_AnchoredPosition: {x: 0, y: 0}
-  m_SizeDelta: {x: 256, y: 64}
+  m_SizeDelta: {x: 256, y: 256}
   m_Pivot: {x: 0, y: 1}
 --- !u!1 &1286535890
 GameObject:

@@ -28,7 +28,7 @@ int _PaintR;
 uint _PaintType;
 uint _PaintReplace; // 1 = overwrite existing materials, 0 = only fill empty cells.
 
-// Cursor params (for Visualize overlay).
+// Cursor params for visualization.
 int _CursorX;
 int _CursorY;
 int _CursorR;
@@ -44,7 +44,7 @@ int _SimPass;   // Red or black on this step.
 int _Gravity;   // Global downward acceleration. Per-material weight scales this.
 
 StructuredBuffer<MaterialProperties> _Materials;
-RWStructuredBuffer<uint>  _SimData;
+RWStructuredBuffer<uint> _SimData;
 RWTexture2D<float4> _VisTexture;
 
 int to_flat(int2 i) {
@@ -78,8 +78,10 @@ bool should_move(int vel) {
 }
 
 bool try_move(int2 from, int2 to, uint cell) {
+    // Delete particles that leave the grid.
     if (!in_bounds(to)) {
-        return false;
+        set_cell_data(from, ID_EMPTY);
+        return true;
     }
     
     // Extract properties to compare.
@@ -99,16 +101,20 @@ bool try_move(int2 from, int2 to, uint cell) {
     // These will only be set in the actual data if the move succeeds.
     // We want to make sure we clear the replaced cell's flag as well.
     const uint original_to = cell_to;
-    
+    const uint cell_unmodified = cell;
+
     cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
     cell_to = clear_flag(cell_to, MOVED_LAST_STEP);
-    
+
     // CAS the destination to try and atomically replace cell_to with our cell data.
     // If another thread modified the destination first, we skip this move.
     int original;
     InterlockedCompareExchange(_SimData[to_flat(to)], original_to, cell, original);
     if ((uint)original == original_to) {
-        set_cell_data(from, cell_to);
+        // CAS the source too. Prevents duplication when a same-pass diagonal
+        // neighbor swaps into our cell between the destination CAS and this write.
+        int orig_from;
+        InterlockedCompareExchange(_SimData[to_flat(from)], cell_unmodified, cell_to, orig_from);
         return true;
     }
 
@@ -155,6 +161,7 @@ void evaluate_move(uint2 id) {
             if (try_move(id, id + int2(0, dir), cell)) return;
             if (try_move(id, id + int2(side, dir), cell)) return;
         }
+        
         if (try_move(id, id + int2(-side, dir), cell)) return;
     }
     
@@ -176,8 +183,12 @@ void evaluate_move(uint2 id) {
         // Only spread when truly supported — the cell below must be
         // denser (can't displace it), not just non-empty.
         if (supported && get_mat_props(get_cell_data(ahead)).density >= mat.density) {
-            int side = (hash(id, _SimStep) & 1) == 0 ? -1 : 1;
-            try_move(id, id + int2(side, 0), cell);
+            int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
+            int2 target = id + int2(side, 0);
+            uint target_cell = get_cell_data(target);
+            // Only spread into empty cells or other fluids, not solids.
+            if (is_empty(target_cell) || get_mat_props(target_cell).fluidity > 0)
+                try_move(id, target, cell);
         }
     }
 }
@@ -261,10 +272,10 @@ void Simulate(uint3 id : SV_DispatchThreadID) {
     // serialization priority alternates direction each step, cancelling
     // any hardware-induced lateral bias.
     int half_w = (_SimWidth + 1) / 2;
-    int mx = (_SimStep & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
+    int mx = ((_SimStep + _SimFrame) & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
     const int2 cell = int2(mx * 2 + offset_x, (int)id.y);
 
-    if (cell.x < 0 || cell.x >= _SimWidth || cell.y >= _SimHeight || cell.y == 0) {
+    if (cell.x < 0 || cell.x >= _SimWidth || cell.y >= _SimHeight || cell.y < 0) {
         return;
     }
     
