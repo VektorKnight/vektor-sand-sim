@@ -1,11 +1,13 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.Profiling;
 using UnityEngine.UI;
 using FallingSand.Scripts;
 
 namespace FallingSand {
+    public enum SimResolution { Res960x540, Res1920x1080, Res2560x1440 }
+
     /// <summary>
     /// Drives the falling-sand compute simulation and handles user input.
     ///
@@ -31,13 +33,13 @@ namespace FallingSand {
 
         [Header("Simulation")]
         [SerializeField] private int _gravity = 16;
-        [SerializeField] private int _simScale = 4;
+        [SerializeField] private SimResolution _simResolution = SimResolution.Res1920x1080;
+        [SerializeField] [Range(1, 3)] private int _windowScale = 1;
         [SerializeField] private int _simSteps = 256;
         [SerializeField] private ComputeShader _compute;
 
         [Header("Visualization")]
         [SerializeField] private RawImage _tempVis;
-        [SerializeField] private Text _hudText;
         [SerializeField] [Range(0f, 360f)] private float _lightAngle = 60f;
         [SerializeField] private Color _lightColor = Color.white;
         [SerializeField] [Range(0f, 5f)] private float _lightIntensity = 2f;
@@ -66,6 +68,9 @@ namespace FallingSand {
         private ComputeBuffer _materialBuffer;
         private RenderTexture _visTexture;
         private RenderTexture _lightTexture;
+
+        // Deferred recreation flag.
+        private bool _pendingRecreate;
 
         // Kernel handles.
         private int KERNEL_PAINT;
@@ -106,17 +111,83 @@ namespace FallingSand {
         private static readonly int ID_LIGHT_MAX_STEPS = Shader.PropertyToID("_LightMaxSteps");
         private static readonly int ID_LIGHT_DOWNSCALE = Shader.PropertyToID("_LightDownscale");
 
-        private void Start() {
-            KERNEL_PAINT   = _compute.FindKernel("Paint");
-            KERNEL_PREPARE_FRAME = _compute.FindKernel("PrepareFrame");
-            KERNEL_SIM     = _compute.FindKernel("Simulate");
-            KERNEL_LIGHT   = _compute.FindKernel("Light");
-            KERNEL_VIS     = _compute.FindKernel("Visualize");
+        // --- Public API ---
 
-            UploadMaterials();
+        public MaterialDefinition[] Materials => _materials;
 
-            var simWidth  = Screen.width / _simScale;
-            var simHeight = Screen.height / _simScale;
+        public int SelectedMaterialIndex {
+            get => _selectedIndex;
+            set => _selectedIndex = Mathf.Clamp(value, 0, _materials.Length - 1);
+        }
+
+        public float LightAngle {
+            get => _lightAngle;
+            set => _lightAngle = value;
+        }
+
+        public float LightIntensity {
+            get => _lightIntensity;
+            set => _lightIntensity = value;
+        }
+
+        public Color LightColor {
+            get => _lightColor;
+            set => _lightColor = value;
+        }
+
+        public Color AmbientColor {
+            get => _ambientColor;
+            set => _ambientColor = value;
+        }
+
+        public int LightMaxSteps {
+            get => _lightMaxSteps;
+            set => _lightMaxSteps = value;
+        }
+
+        public int PaintRadius {
+            get => _paintRadius;
+            set => _paintRadius = Mathf.Clamp(value, _paintRadiusMin, _paintRadiusMax);
+        }
+
+        public bool PaintReplace {
+            get => _paintReplace;
+            set => _paintReplace = value;
+        }
+
+        public int SimWidth => _visTexture ? _visTexture.width : 0;
+        public int SimHeight => _visTexture ? _visTexture.height : 0;
+        public int LightWidth => _lightTexture ? _lightTexture.width : 0;
+        public int LightHeight => _lightTexture ? _lightTexture.height : 0;
+        public int FPS => _fpsDisplay;
+
+        public SimResolution Resolution {
+            get => _simResolution;
+            set { _simResolution = value; _pendingRecreate = true; }
+        }
+
+        public int WindowScale {
+            get => _windowScale;
+            set { _windowScale = Mathf.Clamp(value, 1, 3); _pendingRecreate = true; }
+        }
+
+        // --- Resolution helpers ---
+
+        private Vector2Int GetSimDimensions() => _simResolution switch {
+            SimResolution.Res960x540   => new(960, 540),
+            SimResolution.Res1920x1080 => new(1920, 1080),
+            SimResolution.Res2560x1440 => new(2560, 1440),
+            _ => new(1920, 1080)
+        };
+
+        public void RecreateSimulation() {
+            if (_simData != null && _simData.IsValid()) _simData.Release();
+            if (_visTexture) _visTexture.Release();
+            if (_lightTexture) _lightTexture.Release();
+
+            var dims = GetSimDimensions();
+            var simWidth = dims.x;
+            var simHeight = dims.y;
 
             _simData = new ComputeBuffer(simWidth * simHeight, sizeof(int));
 
@@ -125,17 +196,33 @@ namespace FallingSand {
                 filterMode = FilterMode.Point,
                 useMipMap = false
             };
-
             _visTexture.Create();
             _tempVis.texture = _visTexture;
 
-            // Downscaled light buffer with bilinear filtering for smooth compositing.
             _lightTexture = new RenderTexture(simWidth / _lightDownscale, simHeight / _lightDownscale, 0, RenderTextureFormat.ARGBHalf) {
                 enableRandomWrite = true,
                 filterMode = FilterMode.Bilinear,
                 useMipMap = false
             };
             _lightTexture.Create();
+
+            Screen.SetResolution(simWidth * _windowScale, simHeight * _windowScale, FullScreenMode.Windowed);
+            _simFrame = 0;
+        }
+
+        // --- Lifecycle ---
+
+        private void Start() {
+            KERNEL_PAINT   = _compute.FindKernel("Paint");
+            KERNEL_PREPARE_FRAME = _compute.FindKernel("PrepareFrame");
+            KERNEL_SIM     = _compute.FindKernel("Simulate");
+            KERNEL_LIGHT   = _compute.FindKernel("Light");
+            KERNEL_VIS     = _compute.FindKernel("Visualize");
+
+            UploadMaterials();
+            RecreateSimulation();
+
+            _tempVis.raycastTarget = false;
         }
 
         private void OnDestroy() {
@@ -151,6 +238,21 @@ namespace FallingSand {
         /// </summary>
         private void Update() {
             if (!_compute || !_simData.IsValid()) return;
+
+            // FPS counter (always runs regardless of UI focus).
+            _fpsCounter++;
+            _fpsTimer += Time.deltaTime;
+            if (_fpsTimer >= 1f) {
+                _fpsDisplay = _fpsCounter;
+                _fpsCounter = 0;
+                _fpsTimer -= 1f;
+            }
+
+            // Skip all sim input when pointer is over UI.
+            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) {
+                _wasPainting = false;
+                return;
+            }
 
             // macOS translates shift+scroll from vertical to horizontal at the OS level.
             var delta = Input.mouseScrollDelta;
@@ -179,8 +281,8 @@ namespace FallingSand {
             if (painting || erasing) {
                 var mousePos = Input.mousePosition;
                 var pos = new Vector2Int(
-                    Mathf.FloorToInt(mousePos.x) / _simScale,
-                    Mathf.FloorToInt(mousePos.y) / _simScale
+                    Mathf.FloorToInt(mousePos.x * _visTexture.width / Screen.width),
+                    Mathf.FloorToInt(mousePos.y * _visTexture.height / Screen.height)
                 );
                 var mat = erasing ? 0 : _selectedIndex + 1;
 
@@ -194,21 +296,6 @@ namespace FallingSand {
             }
 
             _wasPainting = painting || erasing;
-
-            // Update FPS counter and HUD text.
-            _fpsCounter++;
-            _fpsTimer += Time.deltaTime;
-            if (_fpsTimer >= 1f) {
-                _fpsDisplay = _fpsCounter;
-                _fpsCounter = 0;
-                _fpsTimer -= 1f;
-            }
-
-            if (_hudText) {
-                var matName = _materials[_selectedIndex].Name;
-                var mode = _paintReplace ? "Replace" : "Fill";
-                _hudText.text = $"{_fpsDisplay} FPS\nSim {_visTexture.width}x{_visTexture.height}\nLight {_lightTexture.width}x{_lightTexture.height}\n{matName} ({mode})";
-            }
         }
 
         /// <summary>
@@ -217,6 +304,11 @@ namespace FallingSand {
         private void FixedUpdate() {
             if (!_compute || !_simData.IsValid()) {
                 return;
+            }
+
+            if (_pendingRecreate) {
+                _pendingRecreate = false;
+                RecreateSimulation();
             }
 
             Profiler.BeginSample("Falling Sand Simulation");
@@ -242,8 +334,8 @@ namespace FallingSand {
             ComputeLight();
 
             var cursorPos = Input.mousePosition;
-            var cursorX = Mathf.FloorToInt(cursorPos.x) / _simScale;
-            var cursorY = Mathf.FloorToInt(cursorPos.y) / _simScale;
+            var cursorX = Mathf.FloorToInt(cursorPos.x * _visTexture.width / Screen.width);
+            var cursorY = Mathf.FloorToInt(cursorPos.y * _visTexture.height / Screen.height);
             Visualize(cursorX, cursorY);
 
             _simFrame++;
