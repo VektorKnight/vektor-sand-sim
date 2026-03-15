@@ -14,14 +14,14 @@ namespace FallingSand.Scripts {
         /// Solids are zero, anything greater is a progressively less viscous fluid / gas.
         /// </summary>
         [Range(0, 255)] public int Fluidity = 0;
-        
+
         /// <summary>
         /// Density determines how materials tend to layer with one another.
         /// Sand should fall through water, oil should float on water, etc.
         /// </summary>
         [Range(0, 255)]
         public int Density = 127;
-        
+
         /// <summary>
         /// Scales global gravity for this material.
         /// 256 = normal, 0 = weightless (e.g. stone), negative = buoyant (e.g. gas).
@@ -46,11 +46,24 @@ namespace FallingSand.Scripts {
         public float Variation = 0f;
 
         /// <summary>
-        /// Light absorption per cell for ray-marching visualization.
-        /// 0 = fully transparent, higher = more opaque.
+        /// How opaque the material is to light. 0 = fully transparent, higher = denser.
+        /// Per-channel extinction is derived automatically from the material color
+        /// so that colored materials cast physically plausible tinted shadows.
         /// </summary>
         [Range(0f, 10f)]
-        public float Extinction = 1f;
+        public float Opacity = 1f;
+
+        /// <summary>
+        /// Self-illumination color. Combined with EmissionIntensity to produce
+        /// light that is added after shading, so emissive materials glow even in shadow.
+        /// </summary>
+        public Color EmissionColor = Color.black;
+
+        /// <summary>
+        /// Brightness multiplier for EmissionColor. 0 = no emission.
+        /// </summary>
+        [Range(0f, 10f)]
+        public float EmissionIntensity = 0f;
 
         public Color Color = UnityEngine.Color.white;
     }

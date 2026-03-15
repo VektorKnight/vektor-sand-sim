@@ -28,6 +28,7 @@
 #pragma kernel PrepareFrame
 #pragma kernel Simulate
 #pragma kernel Light
+#pragma kernel Emission
 #pragma kernel BlurH
 #pragma kernel BlurV
 #pragma kernel Visualize
@@ -53,6 +54,11 @@ float4 _AmbientColor;
 int _LightMaxSteps;
 int _LightDownscale;
 int _LightEnabled;
+int _EmissionMaxSteps;
+int _BounceDirX;
+int _BounceDirY;
+float _BounceIntensity;
+int _BounceMaxSteps;
 
 // Simulation params.
 int _SimWidth;  // X dimension of the sim.
@@ -68,11 +74,14 @@ StructuredBuffer<MaterialProperties> _Materials;
 RWStructuredBuffer<uint> _SimData;
 RWTexture2D<float4> _LightTexture;      // Half-res, written by Light kernel.
 RWTexture2D<float4> _LightTextureTemp;  // Scratch buffer for separable blur.
+RWTexture2D<float4> _EmissionTexture;   // Half-res, written by Emission kernel.
 RWTexture2D<float4> _VisTexture;
 
 // Sampled with bilinear filtering in Visualize.
 Texture2D<float4> _LightTextureRead;
 SamplerState sampler_LightTextureRead;
+Texture2D<float4> _EmissionTextureRead;
+SamplerState sampler_EmissionTextureRead;
 
 // Convert a 2D index to 1D buffer.
 int to_flat(int2 i) {
@@ -353,7 +362,7 @@ float3 march_dda(int2 start, int2 light_dir, float3 light_color, float3 ambient_
         };
         const MaterialProperties mat_pos = get_mat_props(get_cell_data(pos));
 
-        light *= exp(-mat_pos.extinction);
+        light *= exp(-mat_pos.extinction.rgb);
 
         if (light.x + light.y + light.z < 0.01) {
             break;
@@ -364,7 +373,8 @@ float3 march_dda(int2 start, int2 light_dir, float3 light_color, float3 ambient_
 }
 
 // ============================================================================
-// Runs the DDA ray-march at the specified resolution.
+// Runs the DDA ray-march at the specified resolution, then adds a bounce
+// pass that samples the directional light buffer along the bounce direction.
 // ============================================================================
 [numthreads(8,8,1)]
 void Light(uint3 id : SV_DispatchThreadID) {
@@ -379,8 +389,122 @@ void Light(uint3 id : SV_DispatchThreadID) {
     const float3 light_color = _LightColor.rgb;
     const float3 ambient_color = _AmbientColor.rgb;
 
-    const float3 result = march_dda(sim_pos, light_dir, light_color, ambient_color, _LightMaxSteps);
+    float3 result = march_dda(sim_pos, light_dir, light_color, ambient_color, _LightMaxSteps);
+
+    // Bounce pass: march in the bounce direction, sampling the directional
+    // light at each occupied cell hit. The first surface found reflects its
+    // received light back into the scene, attenuated by extinction along
+    // the bounce path and the material's color (acts as reflectance).
+    if (_BounceIntensity > 0 && _BounceMaxSteps > 0) {
+        const int2 bounce_dir = int2(_BounceDirX, _BounceDirY);
+        const int2 bs = sign(bounce_dir);
+        const int2 ba = abs(bounce_dir);
+        const bool bx_major = ba.x >= ba.y;
+        const int b_major = bx_major ? ba.x : ba.y;
+        const int b_minor = bx_major ? ba.y : ba.x;
+
+        float3 bounce = 0;
+        float3 transmittance = 1;
+        int baccum = 0;
+        int2 bpos = sim_pos;
+
+        // Track whether we've crossed empty space. Only bounce off the
+        // first surface AFTER a gap to avoid self-illumination inside
+        // the same body of material.
+        bool passed_gap = is_empty(get_cell_data(sim_pos));
+
+        [loop]
+        for (int i = 0; i < _BounceMaxSteps; i++) {
+            if (bx_major) bpos.x += bs.x;
+            else          bpos.y += bs.y;
+
+            baccum += b_minor;
+            if (baccum >= b_major) {
+                if (bx_major) bpos.y += bs.y;
+                else          bpos.x += bs.x;
+                baccum -= b_major;
+            }
+
+            if (!in_bounds(bpos)) break;
+
+            const uint bcell = get_cell_data(bpos);
+            const MaterialProperties mat_b = get_mat_props(bcell);
+            const bool occupied = !is_empty(bcell);
+
+            if (!occupied) {
+                passed_gap = true;
+            } else if (passed_gap) {
+                // First surface after a gap — this is the bounce source.
+                const float2 buv = (float2(bpos) + 0.5) / float2(_SimWidth, _SimHeight);
+                float3 surface_light = _LightTextureRead.SampleLevel(sampler_LightTextureRead, buv, 0).rgb;
+                bounce = surface_light * mat_b.color.rgb * transmittance;
+                break;
+            }
+
+            transmittance *= exp(-mat_b.extinction.rgb);
+
+            if (transmittance.x + transmittance.y + transmittance.z < 0.01) break;
+        }
+
+        result += bounce * _BounceIntensity;
+    }
+
     _LightTexture[id.xy] = float4(result, 1);
+}
+
+// ============================================================================
+// Radial emission march. For each half-res texel, marches 8 directions
+// (cardinal + diagonal) collecting emission from emissive cells, attenuated
+// by extinction along the path and inverse-square distance falloff.
+// ============================================================================
+[numthreads(8,8,1)]
+void Emission(uint3 id : SV_DispatchThreadID) {
+    const int2 sim_pos = int2(id.xy) * _LightDownscale;
+
+    if (sim_pos.x >= _SimWidth || sim_pos.y >= _SimHeight) {
+        return;
+    }
+
+    // 8 directions: cardinal + diagonal. Diagonal directions are scaled
+    // by 1/sqrt(2) for correct distance weighting.
+    static const int2 dirs[8] = {
+        int2( 1,  0), int2(-1,  0), int2( 0,  1), int2( 0, -1),
+        int2( 1,  1), int2( 1, -1), int2(-1,  1), int2(-1, -1)
+    };
+    static const float dir_len[8] = {
+        1.0, 1.0, 1.0, 1.0,
+        1.41421356, 1.41421356, 1.41421356, 1.41421356
+    };
+
+    float3 total = 0;
+
+    [unroll]
+    for (int d = 0; d < 8; d++) {
+        float3 transmittance = 1;
+        float dist = 0;
+        int2 pos = sim_pos;
+
+        [loop]
+        for (int i = 0; i < _EmissionMaxSteps; i++) {
+            pos += dirs[d];
+            dist += dir_len[d];
+
+            if (!in_bounds(pos)) break;
+
+            const MaterialProperties mat_pos = get_mat_props(get_cell_data(pos));
+
+            // Accumulate emission before this cell absorbs it.
+            // Inverse-square falloff with a +1 bias to avoid division by zero.
+            // 1/r falloff (correct for 2D) with +1 bias to avoid div-by-zero.
+            total += mat_pos.emission.rgb * transmittance / (1.0 + dist);
+
+            transmittance *= exp(-mat_pos.extinction.rgb);
+
+            if (transmittance.x + transmittance.y + transmittance.z < 0.01) break;
+        }
+    }
+
+    _EmissionTexture[id.xy] = float4(total, 1);
 }
 
 // ============================================================================
@@ -457,11 +581,15 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
     const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
     float3 base_color = float3(saturate(mat.color.rgb + offset));
 
-    // Sample half-res light buffer with bilinear filtering (skip if lighting disabled).
+    // Sample half-res light and emission buffers with bilinear filtering.
     if (_LightEnabled) {
         const float2 uv = (float2(id.xy) + 0.5) / float2(_SimWidth, _SimHeight);
         base_color *= _LightTextureRead.SampleLevel(sampler_LightTextureRead, uv, 0).rgb;
+        base_color += _EmissionTextureRead.SampleLevel(sampler_EmissionTextureRead, uv, 0).rgb;
     }
+
+    // Self-illumination: added after lighting so emissive materials glow even in shadow.
+    base_color += mat.emission.rgb;
 
     _VisTexture[id.xy] = float4(base_color, 1);
 }

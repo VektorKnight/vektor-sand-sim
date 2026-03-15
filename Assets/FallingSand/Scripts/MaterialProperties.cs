@@ -18,8 +18,9 @@ namespace FallingSand.Scripts {
 
         // Visual properties.
         public readonly float Variation;
-        public readonly float Extinction;
+        public readonly float4 Extinction; // Per-channel (RGB), derived from color and opacity.
         public readonly float4 Color;
+        public readonly float4 Emission;   // Pre-multiplied emission color (RGB * intensity).
 
         public MaterialProperties(
             uint fluidity,
@@ -27,29 +28,51 @@ namespace FallingSand.Scripts {
             int weight,
             uint drag,
             float variation,
-            float extinction,
-            float4 color
+            float4 extinction,
+            float4 color,
+            float4 emission
         ) {
             Fluidity   = Math.Min(fluidity, 255);
             Density    = Math.Min(density, 255);
             Weight     = Math.Clamp(weight, -256, 256);
             Drag       = Math.Min(drag, 255);
             Variation  = Math.Clamp(variation, 0f, 1f);
-            Extinction = Math.Max(extinction, 0f);
-
+            Extinction = extinction;
             Color = color;
+            Emission = emission;
         }
 
         public static MaterialProperties FromDefinition(MaterialDefinition def) {
             var linear = def.Color.linear;
+
+            // Derive per-channel extinction from opacity and color.
+            // A material's color tells us what it reflects; the complement is what it absorbs.
+            // opacity * (1 - color_linear) gives physically plausible tinted shadows.
+            var ext = new float4(
+                def.Opacity * (1f - linear.r),
+                def.Opacity * (1f - linear.g),
+                def.Opacity * (1f - linear.b),
+                0f
+            );
+
+            // Pre-multiply emission color by intensity in linear space.
+            var emLinear = def.EmissionColor.linear;
+            var emission = new float4(
+                emLinear.r * def.EmissionIntensity,
+                emLinear.g * def.EmissionIntensity,
+                emLinear.b * def.EmissionIntensity,
+                0f
+            );
+
             return new MaterialProperties(
                 (uint)def.Fluidity,
                 (uint)def.Density,
                 def.Weight,
                 (uint)def.Drag,
                 def.Variation,
-                def.Extinction,
-                new float4(linear.r, linear.g, linear.b, linear.a)
+                ext,
+                new float4(linear.r, linear.g, linear.b, linear.a),
+                emission
             );
         }
     }

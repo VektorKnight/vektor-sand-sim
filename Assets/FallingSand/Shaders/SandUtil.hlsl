@@ -32,9 +32,10 @@ struct MaterialProperties {
     int weight;     // Scales global _Gravity. 256 = normal, 0 = weightless, negative = buoyant.
     uint drag;      // Proportional velocity decay. Terminal vel emerges from weight/drag balance.
 
-    float variation; // Brightness spread for color variants. 0 = flat, >0 = per-particle variation.
-    float extinction; // Light absorption per cell for ray-marching. 0 = transparent, higher = more opaque.
+    float variation;    // Brightness spread for color variants. 0 = flat, >0 = per-particle variation.
+    float4 extinction;  // Per-channel light absorption (RGB). Derived from opacity and color on CPU.
     float4 color;
+    float4 emission;    // Pre-multiplied self-illumination (RGB * intensity).
 };
 
 uint pack_i8(uint packed, int value, uint offset) {

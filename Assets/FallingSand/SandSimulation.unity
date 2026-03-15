@@ -275,7 +275,9 @@ MonoBehaviour:
     Weight: 0
     Drag: 0
     Variation: 0.25
-    Extinction: 0.4
+    Opacity: 1
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.38679248, g: 0.38679248, b: 0.38679248, a: 1}
   - Name: Gravel
     Fluidity: 0
@@ -283,7 +285,9 @@ MonoBehaviour:
     Weight: 128
     Drag: 96
     Variation: 0.1
-    Extinction: 1
+    Opacity: 1
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.28, g: 0.28, b: 0.28, a: 1}
   - Name: Sand
     Fluidity: 0
@@ -291,7 +295,9 @@ MonoBehaviour:
     Weight: 128
     Drag: 128
     Variation: 0.5
-    Extinction: 0.1
+    Opacity: 0.7
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.8207547, g: 0.5865165, b: 0.32907617, a: 1}
   - Name: Snow
     Fluidity: 1
@@ -299,7 +305,9 @@ MonoBehaviour:
     Weight: 128
     Drag: 192
     Variation: 0.5
-    Extinction: 0.03
+    Opacity: 0.04
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.58526164, g: 0.7553496, b: 0.9056604, a: 1}
   - Name: Ice
     Fluidity: 0
@@ -307,7 +315,9 @@ MonoBehaviour:
     Weight: 0
     Drag: 0
     Variation: 0.5
-    Extinction: 0.03
+    Opacity: 0.06
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.49019608, g: 0.8235294, b: 0.8862745, a: 1}
   - Name: Water
     Fluidity: 255
@@ -315,7 +325,9 @@ MonoBehaviour:
     Weight: 128
     Drag: 128
     Variation: 0.1
-    Extinction: 0.015
+    Opacity: 0.01
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.14509802, g: 0.36678076, b: 0.7921569, a: 1}
   - Name: Oil
     Fluidity: 64
@@ -323,7 +335,9 @@ MonoBehaviour:
     Weight: 128
     Drag: 128
     Variation: 0.1
-    Extinction: 0.04
+    Opacity: 0.1
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.43529412, g: 0.29143146, b: 0.23529412, a: 1}
   - Name: Tar
     Fluidity: 8
@@ -331,8 +345,20 @@ MonoBehaviour:
     Weight: 128
     Drag: 192
     Variation: 0.05
-    Extinction: 0.4
+    Opacity: 0.4
+    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
+    EmissionIntensity: 0
     Color: {r: 0.1981132, g: 0.16914383, b: 0.16914383, a: 1}
+  - Name: Lava
+    Fluidity: 4
+    Density: 125
+    Weight: 128
+    Drag: 192
+    Variation: 0.05
+    Opacity: 0.4
+    EmissionColor: {r: 1, g: 0.49085784, b: 0, a: 1}
+    EmissionIntensity: 0.4
+    Color: {r: 0.35220122, g: 0.04995762, b: 0, a: 1}
   _gravity: 16
   _simResolution: 1
   _windowScale: 1
@@ -342,11 +368,15 @@ MonoBehaviour:
   _tempVis: {fileID: 677317741}
   _lightAngle: 60
   _lightColor: {r: 1, g: 1, b: 1, a: 1}
-  _lightIntensity: 2
+  _lightIntensity: 2.25
   _ambientColor: {r: 0.6, g: 0.6, b: 0.6, a: 1}
   _lightMaxSteps: 512
   _lightDownscale: 4
+  _lightBlurPasses: 3
   _lightEnabled: 1
+  _emissionMaxSteps: 128
+  _bounceIntensity: 1
+  _bounceMaxSteps: 256
 --- !u!4 &263843365
 Transform:
   m_ObjectHideFlags: 0

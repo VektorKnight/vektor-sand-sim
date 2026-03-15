@@ -35,9 +35,9 @@ namespace FallingSand {
 
         [Header("Materials")]
         [SerializeField] private MaterialDefinition[] _materials = {
-            new() { Name = "Stone", Fluidity = 0,  Density = 255, Weight = 0,    Drag = 0,   Color = new Color(0.5f, 0.5f, 0.5f) },
-            new() { Name = "Sand",  Fluidity = 0,  Density = 200, Weight = 256,  Drag = 16,  Color = new Color(0.9f, 0.8f, 0.5f) },
-            new() { Name = "Water", Fluidity = 64, Density = 100, Weight = 256,  Drag = 32,  Color = new Color(0.2f, 0.4f, 0.9f) },
+            new() { Name = "Stone", Fluidity = 0,  Density = 255, Weight = 0,    Drag = 0,   Opacity = 3f,   Color = new Color(0.5f, 0.5f, 0.5f) },
+            new() { Name = "Sand",  Fluidity = 0,  Density = 200, Weight = 256,  Drag = 16,  Opacity = 2f,   Color = new Color(0.9f, 0.8f, 0.5f) },
+            new() { Name = "Water", Fluidity = 64, Density = 100, Weight = 256,  Drag = 32,  Opacity = 0.5f, Color = new Color(0.2f, 0.4f, 0.9f) },
         };
 
         [Header("Simulation")]
@@ -54,13 +54,17 @@ namespace FallingSand {
         [SerializeField] private Color _lightColor = Color.white;
         [SerializeField] [Range(0f, 5f)] private float _lightIntensity = 2f;
         [SerializeField] private Color _ambientColor = new(0.1f, 0.1f, 0.1f, 1f);
-        [SerializeField] [Range(16, 512)] private int _lightMaxSteps = 64;
+        [SerializeField] [Range(16, 1024)] private int _lightMaxSteps = 64;
         [SerializeField] [Range(1, 4)] private int _lightDownscale = 2;
+        [SerializeField] [Range(1, 8)] private int _lightBlurPasses = 3;
         [SerializeField] private bool _lightEnabled = true;
+        [SerializeField] [Range(8, 256)] private int _emissionMaxSteps = 32;
+        [SerializeField] [Range(0f, 1f)] private float _bounceIntensity = 0.3f;
+        [SerializeField] [Range(8, 256)] private int _bounceMaxSteps = 32;
 
         // The empty material is always index 0 in the GPU buffer.
         // Inspector materials follow starting at index 1.
-        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, 0f, 0f, default);
+        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, 0f, default, default, default);
 
         // Paint state.
         private int _selectedIndex;
@@ -83,6 +87,7 @@ namespace FallingSand {
         private RenderTexture _visTexture;
         private RenderTexture _lightTexture;
         private RenderTexture _lightTextureTemp;
+        private RenderTexture _emissionTexture;
 
         // Deferred recreation flag.
         private bool _pendingRecreate;
@@ -92,6 +97,7 @@ namespace FallingSand {
         private int KERNEL_PREPARE_FRAME;
         private int KERNEL_SIM;
         private int KERNEL_LIGHT;
+        private int KERNEL_EMISSION;
         private int KERNEL_BLUR_H;
         private int KERNEL_BLUR_V;
         private int KERNEL_VIS;
@@ -130,7 +136,14 @@ namespace FallingSand {
         private static readonly int ID_AMBIENT_COLOR = Shader.PropertyToID("_AmbientColor");
         private static readonly int ID_LIGHT_MAX_STEPS = Shader.PropertyToID("_LightMaxSteps");
         private static readonly int ID_LIGHT_DOWNSCALE = Shader.PropertyToID("_LightDownscale");
+        private static readonly int ID_EMISSION_MAX_STEPS = Shader.PropertyToID("_EmissionMaxSteps");
+        private static readonly int ID_EMISSION_TEXTURE = Shader.PropertyToID("_EmissionTexture");
+        private static readonly int ID_EMISSION_TEXTURE_READ = Shader.PropertyToID("_EmissionTextureRead");
         private static readonly int ID_LIGHT_ENABLED  = Shader.PropertyToID("_LightEnabled");
+        private static readonly int ID_BOUNCE_DIR_X   = Shader.PropertyToID("_BounceDirX");
+        private static readonly int ID_BOUNCE_DIR_Y   = Shader.PropertyToID("_BounceDirY");
+        private static readonly int ID_BOUNCE_INTENSITY = Shader.PropertyToID("_BounceIntensity");
+        private static readonly int ID_BOUNCE_MAX_STEPS = Shader.PropertyToID("_BounceMaxSteps");
 
         // --- Public API ---
 
@@ -225,6 +238,7 @@ namespace FallingSand {
             if (_visTexture) Destroy(_visTexture);
             if (_lightTexture) Destroy(_lightTexture);
             if (_lightTextureTemp) Destroy(_lightTextureTemp);
+            if (_emissionTexture) Destroy(_emissionTexture);
 
             var dims = GetSimDimensions();
             var simWidth = dims.x;
@@ -255,10 +269,17 @@ namespace FallingSand {
 
             _lightTextureTemp = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
                 enableRandomWrite = true,
-                filterMode = FilterMode.Point,
+                filterMode = FilterMode.Bilinear,
                 useMipMap = false
             };
             _lightTextureTemp.Create();
+
+            _emissionTexture = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
+                enableRandomWrite = true,
+                filterMode = FilterMode.Bilinear,
+                useMipMap = false
+            };
+            _emissionTexture.Create();
 
             Screen.SetResolution(simWidth * _windowScale, simHeight * _windowScale, FullScreenMode.Windowed);
             _simFrame = 0;
@@ -286,6 +307,7 @@ namespace FallingSand {
             KERNEL_PREPARE_FRAME = _compute.FindKernel("PrepareFrame");
             KERNEL_SIM     = _compute.FindKernel("Simulate");
             KERNEL_LIGHT   = _compute.FindKernel("Light");
+            KERNEL_EMISSION = _compute.FindKernel("Emission");
             KERNEL_BLUR_H  = _compute.FindKernel("BlurH");
             KERNEL_BLUR_V  = _compute.FindKernel("BlurV");
             KERNEL_VIS     = _compute.FindKernel("Visualize");
@@ -303,6 +325,7 @@ namespace FallingSand {
             if (_visTexture) Destroy(_visTexture);
             if (_lightTexture) Destroy(_lightTexture);
             if (_lightTextureTemp) Destroy(_lightTextureTemp);
+            if (_emissionTexture) Destroy(_emissionTexture);
         }
 
         /// <summary>
@@ -419,7 +442,9 @@ namespace FallingSand {
                 var lightCadence = Mathf.Max(1, Mathf.RoundToInt(1f / (60f * Time.unscaledDeltaTime)));
                 if (_simFrame % lightCadence == 0) {
                     ComputeLight();
-                    BlurLight();
+                    for (var b = 0; b < _lightBlurPasses; b++)
+                        BlurLight();
+                    ComputeEmission();
                 }
             }
 
@@ -492,6 +517,7 @@ namespace FallingSand {
             _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_SIM, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_LIGHT, ID_MATERIALS, _materialBuffer);
+            _compute.SetBuffer(KERNEL_EMISSION, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_VIS, ID_MATERIALS, _materialBuffer);
         }
 
@@ -519,6 +545,10 @@ namespace FallingSand {
             var groupsX = Mathf.CeilToInt((float)_lightTexture.width / 8);
             var groupsY = Mathf.CeilToInt((float)_lightTexture.height / 8);
 
+            // Copy previous frame's blurred light into temp so the bounce
+            // march can read it safely while we write the new light buffer.
+            Graphics.CopyTexture(_lightTexture, _lightTextureTemp);
+
             // Convert angle to integer DDA direction.
             // 0° = right, 90° = up. Scale by 16 for slope precision, flip Y (sim Y=0 is bottom).
             var rad = _lightAngle * Mathf.Deg2Rad;
@@ -532,10 +562,30 @@ namespace FallingSand {
             _compute.SetInt(ID_LIGHT_MAX_STEPS, _lightMaxSteps);
             _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
 
+            // Bounce direction: opposite of the main light, for indirect fill.
+            _compute.SetInt(ID_BOUNCE_DIR_X, -Mathf.RoundToInt(Mathf.Cos(rad) * 16));
+            _compute.SetInt(ID_BOUNCE_DIR_Y, -Mathf.RoundToInt(Mathf.Sin(rad) * 16));
+            _compute.SetFloat(ID_BOUNCE_INTENSITY, _bounceIntensity);
+            _compute.SetInt(ID_BOUNCE_MAX_STEPS, _bounceMaxSteps);
+
             _compute.SetBuffer(KERNEL_LIGHT, ID_SIM_DATA, _simData);
             _compute.SetTexture(KERNEL_LIGHT, ID_LIGHT_TEXTURE, _lightTexture);
+            _compute.SetTexture(KERNEL_LIGHT, ID_LIGHT_TEXTURE_READ, _lightTextureTemp);
 
             _compute.Dispatch(KERNEL_LIGHT, groupsX, groupsY, 1);
+        }
+
+        private void ComputeEmission() {
+            var groupsX = Mathf.CeilToInt((float)_emissionTexture.width / 8);
+            var groupsY = Mathf.CeilToInt((float)_emissionTexture.height / 8);
+
+            _compute.SetInt(ID_EMISSION_MAX_STEPS, _emissionMaxSteps);
+            _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
+
+            _compute.SetBuffer(KERNEL_EMISSION, ID_SIM_DATA, _simData);
+            _compute.SetTexture(KERNEL_EMISSION, ID_EMISSION_TEXTURE, _emissionTexture);
+
+            _compute.Dispatch(KERNEL_EMISSION, groupsX, groupsY, 1);
         }
 
         private void BlurLight() {
@@ -568,6 +618,7 @@ namespace FallingSand {
             _compute.SetBuffer(KERNEL_VIS, ID_SIM_DATA, _simData);
             _compute.SetTexture(KERNEL_VIS, ID_VIS_TEXTURE, _visTexture);
             _compute.SetTexture(KERNEL_VIS, ID_LIGHT_TEXTURE_READ, _lightTexture);
+            _compute.SetTexture(KERNEL_VIS, ID_EMISSION_TEXTURE_READ, _emissionTexture);
 
             _compute.Dispatch(KERNEL_VIS, groupsX, groupsY, 1);
         }
