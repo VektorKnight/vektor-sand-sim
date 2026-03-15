@@ -33,3 +33,4 @@ Thumbs.db
 # Crashes
 sysinfo.txt
 crashlytics-build.properties
+.vsconfig

@@ -20,6 +20,14 @@ namespace FallingSand {
     ///   Insert            – toggle replacement paint mode
     /// </summary>
     public class SandSimulation : MonoBehaviour {
+#if UNITY_STANDALONE_WIN && !UNITY_EDITOR
+        [DllImport("user32.dll")]
+        private static extern bool SetProcessDPIAware();
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        static void EnableHighDpi() => SetProcessDPIAware();
+#endif
+
         [Header("Painting")]
         [SerializeField] private int _paintRadius = 5;
         [SerializeField] private int _paintRadiusMin = 1;
@@ -204,18 +212,26 @@ namespace FallingSand {
         };
 
         public void RecreateSimulation() {
+            // Flush pending GPU work before releasing resources so in-flight
+            // dispatches from the previous frame don't alias the new allocations.
+            GL.Flush();
+
             if (_simData != null && _simData.IsValid()) _simData.Release();
-            if (_visTexture) _visTexture.Release();
-            if (_lightTexture) _lightTexture.Release();
-            if (_lightTextureTemp) _lightTextureTemp.Release();
+            _tempVis.texture = null;
+            if (_visTexture) Destroy(_visTexture);
+            if (_lightTexture) Destroy(_lightTexture);
+            if (_lightTextureTemp) Destroy(_lightTextureTemp);
 
             var dims = GetSimDimensions();
             var simWidth = dims.x;
             var simHeight = dims.y;
 
             _simData = new ComputeBuffer(simWidth * simHeight, sizeof(int));
+            // DX12 does not guarantee zero-initialized memory. Garbage data
+            // would appear as random non-empty cells with invalid material IDs.
+            _simData.SetData(new int[simWidth * simHeight]);
 
-            _visTexture = new RenderTexture(simWidth, simHeight, 0, RenderTextureFormat.ARGB32) {
+            _visTexture = new RenderTexture(simWidth, simHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) {
                 enableRandomWrite = true,
                 filterMode = FilterMode.Point,
                 useMipMap = false
@@ -276,11 +292,11 @@ namespace FallingSand {
         }
 
         private void OnDestroy() {
-            if (_simData.IsValid()) _simData.Release();
+            if (_simData != null && _simData.IsValid()) _simData.Release();
             if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
-            if (_visTexture) _visTexture.Release();
-            if (_lightTexture) _lightTexture.Release();
-            if (_lightTextureTemp) _lightTextureTemp.Release();
+            if (_visTexture) Destroy(_visTexture);
+            if (_lightTexture) Destroy(_lightTexture);
+            if (_lightTextureTemp) Destroy(_lightTextureTemp);
         }
 
         /// <summary>

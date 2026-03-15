@@ -364,7 +364,7 @@ float3 march_dda(int2 start, int2 light_dir, float3 light_color, float3 ambient_
 }
 
 // ============================================================================
-// Runs the DDA ray-march at half resolution and writes to the light buffer.
+// Runs the DDA ray-march at the specified resolution.
 // ============================================================================
 [numthreads(8,8,1)]
 void Light(uint3 id : SV_DispatchThreadID) {
