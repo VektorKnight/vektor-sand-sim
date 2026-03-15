@@ -343,9 +343,10 @@ MonoBehaviour:
   _lightAngle: 60
   _lightColor: {r: 1, g: 1, b: 1, a: 1}
   _lightIntensity: 2
-  _ambientColor: {r: 0.426, g: 0.426, b: 0.426, a: 1}
+  _ambientColor: {r: 0.6, g: 0.6, b: 0.6, a: 1}
   _lightMaxSteps: 512
   _lightDownscale: 4
+  _lightEnabled: 1
 --- !u!4 &263843365
 Transform:
   m_ObjectHideFlags: 0
