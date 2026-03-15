@@ -28,6 +28,8 @@
 #pragma kernel PrepareFrame
 #pragma kernel Simulate
 #pragma kernel Light
+#pragma kernel BlurH
+#pragma kernel BlurV
 #pragma kernel Visualize
 
 // Paint params.
@@ -50,6 +52,7 @@ float4 _LightColor;
 float4 _AmbientColor;
 int _LightMaxSteps;
 int _LightDownscale;
+int _LightEnabled;
 
 // Simulation params.
 int _SimWidth;  // X dimension of the sim.
@@ -63,7 +66,8 @@ int _Gravity;   // Global downward acceleration. Per-material weight scales this
 // Simulation data buffers.
 StructuredBuffer<MaterialProperties> _Materials;
 RWStructuredBuffer<uint> _SimData;
-RWTexture2D<float4> _LightTexture;  // Half-res, written by Light kernel.
+RWTexture2D<float4> _LightTexture;      // Half-res, written by Light kernel.
+RWTexture2D<float4> _LightTextureTemp;  // Scratch buffer for separable blur.
 RWTexture2D<float4> _VisTexture;
 
 // Sampled with bilinear filtering in Visualize.
@@ -380,6 +384,42 @@ void Light(uint3 id : SV_DispatchThreadID) {
 }
 
 // ============================================================================
+// Separable 5-tap Gaussian blur on the half-res light buffer.
+// Two passes: BlurH writes _LightTexture → _LightTextureTemp,
+//             BlurV writes _LightTextureTemp → _LightTexture.
+// ============================================================================
+
+// 5-tap Gaussian weights (sigma ~1.4): [0.06136, 0.24477, 0.38774, 0.24477, 0.06136]
+static const float _BlurWeights[5] = { 0.06136, 0.24477, 0.38774, 0.24477, 0.06136 };
+
+int _LightWidth;
+int _LightHeight;
+
+[numthreads(8,8,1)]
+void BlurH(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_LightWidth || id.y >= (uint)_LightHeight) return;
+
+    float4 sum = 0;
+    for (int k = -2; k <= 2; k++) {
+        int sx = clamp((int)id.x + k, 0, _LightWidth - 1);
+        sum += _LightTexture[int2(sx, id.y)] * _BlurWeights[k + 2];
+    }
+    _LightTextureTemp[id.xy] = sum;
+}
+
+[numthreads(8,8,1)]
+void BlurV(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_LightWidth || id.y >= (uint)_LightHeight) return;
+
+    float4 sum = 0;
+    for (int k = -2; k <= 2; k++) {
+        int sy = clamp((int)id.y + k, 0, _LightHeight - 1);
+        sum += _LightTextureTemp[int2(id.x, sy)] * _BlurWeights[k + 2];
+    }
+    _LightTexture[id.xy] = sum;
+}
+
+// ============================================================================
 // Writes material colors to the output texture, sampling the half-res light
 // buffer with bilinear filtering. Draws a cursor ring overlay.
 // ============================================================================
@@ -417,9 +457,11 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
     const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
     float3 base_color = float3(saturate(mat.color.rgb + offset));
 
-    // Sample half-res light buffer with bilinear filtering.
-    const float2 uv = (float2(id.xy) + 0.5) / float2(_SimWidth, _SimHeight);
-    base_color *= _LightTextureRead.SampleLevel(sampler_LightTextureRead, uv, 0).rgb;
+    // Sample half-res light buffer with bilinear filtering (skip if lighting disabled).
+    if (_LightEnabled) {
+        const float2 uv = (float2(id.xy) + 0.5) / float2(_SimWidth, _SimHeight);
+        base_color *= _LightTextureRead.SampleLevel(sampler_LightTextureRead, uv, 0).rgb;
+    }
 
     _VisTexture[id.xy] = float4(base_color, 1);
 }

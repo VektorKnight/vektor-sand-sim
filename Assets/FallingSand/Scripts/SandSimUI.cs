@@ -134,6 +134,9 @@ namespace FallingSand {
             var csf = _settingsPanel.AddComponent<ContentSizeFitter>();
             csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
+            // Lighting toggle.
+            CreateToggle(_settingsPanel.transform, "Lighting", _sim.LightEnabled, v => _sim.LightEnabled = v);
+
             // Light Angle.
             CreateSlider(_settingsPanel.transform, "Light Angle", 0f, 360f, _sim.LightAngle, v => _sim.LightAngle = v);
 
@@ -165,6 +168,12 @@ namespace FallingSand {
                 new[] { "1x", "2x", "3x" },
                 _sim.WindowScale - 1,
                 idx => _sim.WindowScale = idx + 1);
+
+            // Frame Rate Cap dropdown.
+            CreateDropdown(_settingsPanel.transform, "Frame Rate",
+                new[] { "VSync", "60 FPS" },
+                (int)_sim.FrameCap,
+                idx => _sim.FrameCap = (FrameRateCap)idx);
 
             _settingsPanel.SetActive(false);
         }
@@ -198,6 +207,61 @@ namespace FallingSand {
         }
 
         // ---- Helper methods ----
+
+        private static void CreateToggle(Transform parent, string label, bool value, Action<bool> onChange) {
+            var row = new GameObject(label + "Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
+            row.transform.SetParent(parent, false);
+            var hlg = row.GetComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 4;
+            hlg.childForceExpandWidth = false;
+            hlg.childForceExpandHeight = false;
+            hlg.childAlignment = TextAnchor.MiddleLeft;
+
+            var le = row.AddComponent<LayoutElement>();
+            le.preferredHeight = 22;
+            le.flexibleWidth = 1;
+
+            // Label.
+            var lblText = CreateText(row.transform, label, 11, TextAnchor.MiddleLeft);
+            lblText.raycastTarget = false;
+            var lblLE = lblText.gameObject.AddComponent<LayoutElement>();
+            lblLE.preferredWidth = 100;
+            lblLE.minWidth = 100;
+
+            // Checkbox.
+            var toggleGO = new GameObject("Toggle", typeof(RectTransform), typeof(Toggle));
+            toggleGO.transform.SetParent(row.transform, false);
+            var toggleLE = toggleGO.AddComponent<LayoutElement>();
+            toggleLE.preferredWidth = 18;
+            toggleLE.preferredHeight = 18;
+
+            // Background box.
+            var bg = new GameObject("Background", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            bg.transform.SetParent(toggleGO.transform, false);
+            var bgRT = bg.GetComponent<RectTransform>();
+            bgRT.anchorMin = Vector2.zero;
+            bgRT.anchorMax = Vector2.one;
+            bgRT.offsetMin = Vector2.zero;
+            bgRT.offsetMax = Vector2.zero;
+            bg.GetComponent<Image>().color = new Color(0.2f, 0.2f, 0.2f);
+
+            // Checkmark.
+            var check = new GameObject("Checkmark", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            check.transform.SetParent(bg.transform, false);
+            var checkRT = check.GetComponent<RectTransform>();
+            checkRT.anchorMin = new Vector2(0.15f, 0.15f);
+            checkRT.anchorMax = new Vector2(0.85f, 0.85f);
+            checkRT.offsetMin = Vector2.zero;
+            checkRT.offsetMax = Vector2.zero;
+            check.GetComponent<Image>().color = Color.white;
+
+            var toggle = toggleGO.GetComponent<Toggle>();
+            toggle.targetGraphic = bg.GetComponent<Image>();
+            toggle.graphic = check.GetComponent<Image>();
+            toggle.isOn = value;
+            toggle.onValueChanged.AddListener(v => onChange(v));
+        }
+
 
         private static GameObject CreatePanel(Transform parent, string name, Color color) {
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));

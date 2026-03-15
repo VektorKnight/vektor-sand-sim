@@ -7,6 +7,7 @@ using FallingSand.Scripts;
 
 namespace FallingSand {
     public enum SimResolution { Res960x540, Res1920x1080, Res2560x1440 }
+    public enum FrameRateCap { VSync, Cap60 }
 
     /// <summary>
     /// Drives the falling-sand compute simulation and handles user input.
@@ -35,7 +36,8 @@ namespace FallingSand {
         [SerializeField] private int _gravity = 16;
         [SerializeField] private SimResolution _simResolution = SimResolution.Res1920x1080;
         [SerializeField] [Range(1, 3)] private int _windowScale = 1;
-        [SerializeField] private int _simSteps = 256;
+        [SerializeField] private int _baseSimSteps = 256;
+        [SerializeField] private FrameRateCap _frameRateCap = FrameRateCap.VSync;
         [SerializeField] private ComputeShader _compute;
 
         [Header("Visualization")]
@@ -46,6 +48,7 @@ namespace FallingSand {
         [SerializeField] private Color _ambientColor = new(0.1f, 0.1f, 0.1f, 1f);
         [SerializeField] [Range(16, 512)] private int _lightMaxSteps = 64;
         [SerializeField] [Range(1, 4)] private int _lightDownscale = 2;
+        [SerializeField] private bool _lightEnabled = true;
 
         // The empty material is always index 0 in the GPU buffer.
         // Inspector materials follow starting at index 1.
@@ -61,6 +64,8 @@ namespace FallingSand {
         private float _fpsTimer;
         private int _fpsCounter;
         private int _fpsDisplay;
+        private float _smoothDeltaTime = 1f / 60f;
+        private int _effectiveSteps;
 
         // Resources.
         private int _simFrame;
@@ -68,6 +73,7 @@ namespace FallingSand {
         private ComputeBuffer _materialBuffer;
         private RenderTexture _visTexture;
         private RenderTexture _lightTexture;
+        private RenderTexture _lightTextureTemp;
 
         // Deferred recreation flag.
         private bool _pendingRecreate;
@@ -77,6 +83,8 @@ namespace FallingSand {
         private int KERNEL_PREPARE_FRAME;
         private int KERNEL_SIM;
         private int KERNEL_LIGHT;
+        private int KERNEL_BLUR_H;
+        private int KERNEL_BLUR_V;
         private int KERNEL_VIS;
 
         // Shader property IDs.
@@ -101,8 +109,11 @@ namespace FallingSand {
         private static readonly int ID_MATERIALS      = Shader.PropertyToID("_Materials");
         private static readonly int ID_SIM_DATA      = Shader.PropertyToID("_SimData");
         private static readonly int ID_VIS_TEXTURE      = Shader.PropertyToID("_VisTexture");
-        private static readonly int ID_LIGHT_TEXTURE     = Shader.PropertyToID("_LightTexture");
+        private static readonly int ID_LIGHT_TEXTURE      = Shader.PropertyToID("_LightTexture");
+        private static readonly int ID_LIGHT_TEXTURE_TEMP = Shader.PropertyToID("_LightTextureTemp");
         private static readonly int ID_LIGHT_TEXTURE_READ = Shader.PropertyToID("_LightTextureRead");
+        private static readonly int ID_LIGHT_WIDTH   = Shader.PropertyToID("_LightWidth");
+        private static readonly int ID_LIGHT_HEIGHT  = Shader.PropertyToID("_LightHeight");
 
         private static readonly int ID_LIGHT_DIR_X   = Shader.PropertyToID("_LightDirX");
         private static readonly int ID_LIGHT_DIR_Y   = Shader.PropertyToID("_LightDirY");
@@ -110,6 +121,7 @@ namespace FallingSand {
         private static readonly int ID_AMBIENT_COLOR = Shader.PropertyToID("_AmbientColor");
         private static readonly int ID_LIGHT_MAX_STEPS = Shader.PropertyToID("_LightMaxSteps");
         private static readonly int ID_LIGHT_DOWNSCALE = Shader.PropertyToID("_LightDownscale");
+        private static readonly int ID_LIGHT_ENABLED  = Shader.PropertyToID("_LightEnabled");
 
         // --- Public API ---
 
@@ -160,6 +172,17 @@ namespace FallingSand {
         public int LightWidth => _lightTexture ? _lightTexture.width : 0;
         public int LightHeight => _lightTexture ? _lightTexture.height : 0;
         public int FPS => _fpsDisplay;
+        public int EffectiveSteps => _effectiveSteps;
+
+        public FrameRateCap FrameCap {
+            get => _frameRateCap;
+            set { _frameRateCap = value; ApplyFrameRateCap(); }
+        }
+
+        public bool LightEnabled {
+            get => _lightEnabled;
+            set => _lightEnabled = value;
+        }
 
         public SimResolution Resolution {
             get => _simResolution;
@@ -184,6 +207,7 @@ namespace FallingSand {
             if (_simData != null && _simData.IsValid()) _simData.Release();
             if (_visTexture) _visTexture.Release();
             if (_lightTexture) _lightTexture.Release();
+            if (_lightTextureTemp) _lightTextureTemp.Release();
 
             var dims = GetSimDimensions();
             var simWidth = dims.x;
@@ -199,15 +223,38 @@ namespace FallingSand {
             _visTexture.Create();
             _tempVis.texture = _visTexture;
 
-            _lightTexture = new RenderTexture(simWidth / _lightDownscale, simHeight / _lightDownscale, 0, RenderTextureFormat.ARGBHalf) {
+            var lightW = simWidth / _lightDownscale;
+            var lightH = simHeight / _lightDownscale;
+
+            _lightTexture = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
                 enableRandomWrite = true,
                 filterMode = FilterMode.Bilinear,
                 useMipMap = false
             };
             _lightTexture.Create();
 
+            _lightTextureTemp = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
+                enableRandomWrite = true,
+                filterMode = FilterMode.Point,
+                useMipMap = false
+            };
+            _lightTextureTemp.Create();
+
             Screen.SetResolution(simWidth * _windowScale, simHeight * _windowScale, FullScreenMode.Windowed);
             _simFrame = 0;
+        }
+
+        private void ApplyFrameRateCap() {
+            switch (_frameRateCap) {
+                case FrameRateCap.VSync:
+                    QualitySettings.vSyncCount = 1;
+                    Application.targetFrameRate = -1;
+                    break;
+                case FrameRateCap.Cap60:
+                    QualitySettings.vSyncCount = 0;
+                    Application.targetFrameRate = 60;
+                    break;
+            }
         }
 
         // --- Lifecycle ---
@@ -217,10 +264,13 @@ namespace FallingSand {
             KERNEL_PREPARE_FRAME = _compute.FindKernel("PrepareFrame");
             KERNEL_SIM     = _compute.FindKernel("Simulate");
             KERNEL_LIGHT   = _compute.FindKernel("Light");
+            KERNEL_BLUR_H  = _compute.FindKernel("BlurH");
+            KERNEL_BLUR_V  = _compute.FindKernel("BlurV");
             KERNEL_VIS     = _compute.FindKernel("Visualize");
 
             UploadMaterials();
             RecreateSimulation();
+            ApplyFrameRateCap();
 
             _tempVis.raycastTarget = false;
         }
@@ -230,16 +280,19 @@ namespace FallingSand {
             if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
             if (_visTexture) _visTexture.Release();
             if (_lightTexture) _lightTexture.Release();
+            if (_lightTextureTemp) _lightTextureTemp.Release();
         }
 
         /// <summary>
-        /// All input handling runs in Update for per-render-frame mouse sampling.
-        /// Paint strokes interpolate between frames to avoid gaps at high speed.
+        /// Input handling and simulation run together in Update — one sim tick per
+        /// render frame. Step count scales inversely with frame rate so visual speed
+        /// stays consistent across refresh rates. Below the 60 Hz baseline the sim
+        /// simply slows down instead of trying to catch up.
         /// </summary>
         private void Update() {
             if (!_compute || !_simData.IsValid()) return;
 
-            // FPS counter (always runs regardless of UI focus).
+            // FPS counter.
             _fpsCounter++;
             _fpsTimer += Time.deltaTime;
             if (_fpsTimer >= 1f) {
@@ -248,90 +301,98 @@ namespace FallingSand {
                 _fpsTimer -= 1f;
             }
 
-            // Skip all sim input when pointer is over UI.
-            if (EventSystem.current != null && EventSystem.current.IsPointerOverGameObject()) {
+            // --- Input (guarded by UI hover) ---
+            var overUI = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+
+            if (overUI) {
                 _wasPainting = false;
-                return;
-            }
+            } else {
+                // macOS translates shift+scroll from vertical to horizontal at the OS level.
+                var delta = Input.mouseScrollDelta;
+                var scroll = delta.y != 0 ? delta.y : delta.x;
 
-            // macOS translates shift+scroll from vertical to horizontal at the OS level.
-            var delta = Input.mouseScrollDelta;
-            var scroll = delta.y != 0 ? delta.y : delta.x;
+                if (scroll != 0) {
+                    var shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
-            if (scroll != 0) {
-                var shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-
-                if (shiftHeld) {
-                    var count = _materials.Length;
-                    _selectedIndex = ((_selectedIndex + (scroll > 0 ? 1 : -1)) % count + count) % count;
-                } else {
-                    _paintRadius += scroll > 0 ? 1 : -1;
-                    _paintRadius = Mathf.Clamp(_paintRadius, _paintRadiusMin, _paintRadiusMax);
-                }
-            }
-
-            if (Input.GetKeyDown(KeyCode.Insert)) {
-                _paintReplace = !_paintReplace;
-            }
-
-            // Paint or erase with line interpolation for fast mouse movement.
-            var painting = Input.GetKey(KeyCode.Mouse0);
-            var erasing  = Input.GetKey(KeyCode.Mouse1);
-
-            if (painting || erasing) {
-                var mousePos = Input.mousePosition;
-                var pos = new Vector2Int(
-                    Mathf.FloorToInt(mousePos.x * _visTexture.width / Screen.width),
-                    Mathf.FloorToInt(mousePos.y * _visTexture.height / Screen.height)
-                );
-                var mat = erasing ? 0 : _selectedIndex + 1;
-
-                if (_wasPainting) {
-                    PaintLine(_lastPaintPos, pos, _paintRadius, mat);
-                } else {
-                    Paint(pos.x, pos.y, _paintRadius, mat);
+                    if (shiftHeld) {
+                        var count = _materials.Length;
+                        _selectedIndex = ((_selectedIndex + (scroll > 0 ? 1 : -1)) % count + count) % count;
+                    } else {
+                        _paintRadius += scroll > 0 ? 1 : -1;
+                        _paintRadius = Mathf.Clamp(_paintRadius, _paintRadiusMin, _paintRadiusMax);
+                    }
                 }
 
-                _lastPaintPos = pos;
+                if (Input.GetKeyDown(KeyCode.Insert)) {
+                    _paintReplace = !_paintReplace;
+                }
+
+                // Paint or erase with line interpolation for fast mouse movement.
+                var painting = Input.GetKey(KeyCode.Mouse0);
+                var erasing  = Input.GetKey(KeyCode.Mouse1);
+
+                if (painting || erasing) {
+                    var mousePos = Input.mousePosition;
+                    var pos = new Vector2Int(
+                        Mathf.FloorToInt(mousePos.x * _visTexture.width / Screen.width),
+                        Mathf.FloorToInt(mousePos.y * _visTexture.height / Screen.height)
+                    );
+                    var mat = erasing ? 0 : _selectedIndex + 1;
+
+                    if (_wasPainting) {
+                        PaintLine(_lastPaintPos, pos, _paintRadius, mat);
+                    } else {
+                        Paint(pos.x, pos.y, _paintRadius, mat);
+                    }
+
+                    _lastPaintPos = pos;
+                }
+
+                _wasPainting = painting || erasing;
             }
 
-            _wasPainting = painting || erasing;
-        }
-
-        /// <summary>
-        /// Run simulation at fixed timestep.
-        /// </summary>
-        private void FixedUpdate() {
-            if (!_compute || !_simData.IsValid()) {
-                return;
-            }
+            // --- Simulation (always runs) ---
 
             if (_pendingRecreate) {
                 _pendingRecreate = false;
                 RecreateSimulation();
             }
 
+            // Scale step count so total steps/sec stays ~constant at baseSteps * 60.
+            // Below 60 Hz the sim just slows down (capped at baseSteps).
+            _smoothDeltaTime = Mathf.Lerp(_smoothDeltaTime, Time.unscaledDeltaTime, 0.05f);
+            _effectiveSteps = Mathf.Clamp(
+                Mathf.RoundToInt(_baseSimSteps * 60f * _smoothDeltaTime),
+                1, _baseSimSteps
+            );
+
             Profiler.BeginSample("Falling Sand Simulation");
 
-            // Set common uniforms.
             _compute.SetInt(ID_SIM_WIDTH, _visTexture.width);
             _compute.SetInt(ID_SIM_HEIGHT, _visTexture.height);
-            _compute.SetInt(ID_SIM_STEPS, _simSteps);
+            _compute.SetInt(ID_SIM_STEPS, _baseSimSteps);
             _compute.SetInt(ID_SIM_FRAME, _simFrame);
             _compute.SetInt(ID_GRAVITY, _gravity);
 
             PrepareFrame();
 
-            for (var i = 0; i < _simSteps; i++) {
-                // Four-color tiling: rotate pass order each step to prevent
-                // systematic priority bias between the four quadrants.
-                var offset = (_simFrame * _simSteps + i) & 3;
+            for (var i = 0; i < _effectiveSteps; i++) {
+                var offset = (_simFrame * _effectiveSteps + i) & 3;
                 for (var p = 0; p < 4; p++)
                     Simulate((p + offset) & 3, i);
             }
 
-            // Light pass at half resolution, then composite in Visualize.
-            ComputeLight();
+            // Light pass at half resolution, amortized at high refresh rates.
+            // Skipped entirely when lighting is disabled.
+            if (_lightEnabled) {
+                var lightCadence = Mathf.Max(1, Mathf.RoundToInt(1f / (60f * _smoothDeltaTime)));
+                if (_simFrame % lightCadence == 0) {
+                    ComputeLight();
+                    BlurLight();
+                }
+            }
+
+            _compute.SetInt(ID_LIGHT_ENABLED, _lightEnabled ? 1 : 0);
 
             var cursorPos = Input.mousePosition;
             var cursorX = Mathf.FloorToInt(cursorPos.x * _visTexture.width / Screen.width);
@@ -368,7 +429,7 @@ namespace FallingSand {
             var groupsY = Mathf.CeilToInt((float)diameter / 8);
 
             // Sim dimensions are needed for the in-bounds check in the kernel.
-            // Paint can run from Update() before the first FixedUpdate() sets them.
+            // Paint runs before the sim dispatch sets them, so set them here too.
             _compute.SetInt(ID_SIM_WIDTH, _visTexture.width);
             _compute.SetInt(ID_SIM_HEIGHT, _visTexture.height);
             _compute.SetInt(ID_PAINT_X, x);
@@ -444,6 +505,24 @@ namespace FallingSand {
             _compute.SetTexture(KERNEL_LIGHT, ID_LIGHT_TEXTURE, _lightTexture);
 
             _compute.Dispatch(KERNEL_LIGHT, groupsX, groupsY, 1);
+        }
+
+        private void BlurLight() {
+            var groupsX = Mathf.CeilToInt((float)_lightTexture.width / 8);
+            var groupsY = Mathf.CeilToInt((float)_lightTexture.height / 8);
+
+            _compute.SetInt(ID_LIGHT_WIDTH, _lightTexture.width);
+            _compute.SetInt(ID_LIGHT_HEIGHT, _lightTexture.height);
+
+            // Horizontal: _LightTexture → _LightTextureTemp
+            _compute.SetTexture(KERNEL_BLUR_H, ID_LIGHT_TEXTURE, _lightTexture);
+            _compute.SetTexture(KERNEL_BLUR_H, ID_LIGHT_TEXTURE_TEMP, _lightTextureTemp);
+            _compute.Dispatch(KERNEL_BLUR_H, groupsX, groupsY, 1);
+
+            // Vertical: _LightTextureTemp → _LightTexture
+            _compute.SetTexture(KERNEL_BLUR_V, ID_LIGHT_TEXTURE_TEMP, _lightTextureTemp);
+            _compute.SetTexture(KERNEL_BLUR_V, ID_LIGHT_TEXTURE, _lightTexture);
+            _compute.Dispatch(KERNEL_BLUR_V, groupsX, groupsY, 1);
         }
 
         private void Visualize(int cursorX, int cursorY) {
