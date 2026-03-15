@@ -26,10 +26,13 @@ namespace FallingSand {
             foreach (var rawImg in GetComponentsInChildren<RawImage>())
                 rawImg.raycastTarget = false;
 
+            LoadSettings();
             BuildMaterialBar();
             BuildSettingsPanel();
             BuildHUD();
         }
+
+        private void OnApplicationQuit() => SaveSettings();
 
         private void Update() {
             // Refresh material highlight.
@@ -41,7 +44,7 @@ namespace FallingSand {
             if (_hudText) {
                 var matName = _sim.Materials[_sim.SelectedMaterialIndex].Name;
                 var mode = _sim.PaintReplace ? "Replace" : "Fill";
-                _hudText.text = $"{_sim.FPS} FPS\nSim {_sim.SimWidth}x{_sim.SimHeight} | Light {_sim.LightWidth}x{_sim.LightHeight}\n{matName} ({mode})";
+                _hudText.text = $"{_sim.FPS} FPS | Steps {_sim.EffectiveSteps}/{_sim.BaseSimSteps}\nSim {_sim.SimWidth}x{_sim.SimHeight} | Light {_sim.LightWidth}x{_sim.LightHeight}\n{matName} ({mode})";
             }
         }
 
@@ -71,6 +74,7 @@ namespace FallingSand {
                 var idx = i;
                 var btn = CreateButton(panel.transform, mats[i].Color, new Vector2(56, 24), () => {
                     _sim.SelectedMaterialIndex = idx;
+                    SaveSettings();
                 });
 
                 var btnLE = btn.gameObject.AddComponent<LayoutElement>();
@@ -135,45 +139,45 @@ namespace FallingSand {
             csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
             // Lighting toggle.
-            CreateToggle(_settingsPanel.transform, "Lighting", _sim.LightEnabled, v => _sim.LightEnabled = v);
+            CreateToggle(_settingsPanel.transform, "Lighting", _sim.LightEnabled, v => { _sim.LightEnabled = v; SaveSettings(); });
 
             // Light Angle.
-            CreateSlider(_settingsPanel.transform, "Light Angle", 0f, 360f, _sim.LightAngle, v => _sim.LightAngle = v);
+            CreateSlider(_settingsPanel.transform, "Light Angle", 0f, 360f, _sim.LightAngle, v => { _sim.LightAngle = v; SaveSettings(); });
 
             // Light Intensity.
-            CreateSlider(_settingsPanel.transform, "Light Intensity", 0f, 5f, _sim.LightIntensity, v => _sim.LightIntensity = v);
+            CreateSlider(_settingsPanel.transform, "Light Intensity", 0f, 5f, _sim.LightIntensity, v => { _sim.LightIntensity = v; SaveSettings(); });
 
             // Light Color (RGB).
             CreateText(_settingsPanel.transform, "Light Color", 11, TextAnchor.MiddleLeft);
             var lc = _sim.LightColor;
-            _lightRSlider = CreateSlider(_settingsPanel.transform, "  R", 0f, 1f, lc.r, _ => ApplyLightColor());
-            _lightGSlider = CreateSlider(_settingsPanel.transform, "  G", 0f, 1f, lc.g, _ => ApplyLightColor());
-            _lightBSlider = CreateSlider(_settingsPanel.transform, "  B", 0f, 1f, lc.b, _ => ApplyLightColor());
+            _lightRSlider = CreateSlider(_settingsPanel.transform, "  R", 0f, 1f, lc.r, _ => { ApplyLightColor(); SaveSettings(); });
+            _lightGSlider = CreateSlider(_settingsPanel.transform, "  G", 0f, 1f, lc.g, _ => { ApplyLightColor(); SaveSettings(); });
+            _lightBSlider = CreateSlider(_settingsPanel.transform, "  B", 0f, 1f, lc.b, _ => { ApplyLightColor(); SaveSettings(); });
 
             // Ambient Color (RGB).
             CreateText(_settingsPanel.transform, "Ambient Color", 11, TextAnchor.MiddleLeft);
             var ac = _sim.AmbientColor;
-            _ambientRSlider = CreateSlider(_settingsPanel.transform, "  R", 0f, 1f, ac.r, _ => ApplyAmbientColor());
-            _ambientGSlider = CreateSlider(_settingsPanel.transform, "  G", 0f, 1f, ac.g, _ => ApplyAmbientColor());
-            _ambientBSlider = CreateSlider(_settingsPanel.transform, "  B", 0f, 1f, ac.b, _ => ApplyAmbientColor());
+            _ambientRSlider = CreateSlider(_settingsPanel.transform, "  R", 0f, 1f, ac.r, _ => { ApplyAmbientColor(); SaveSettings(); });
+            _ambientGSlider = CreateSlider(_settingsPanel.transform, "  G", 0f, 1f, ac.g, _ => { ApplyAmbientColor(); SaveSettings(); });
+            _ambientBSlider = CreateSlider(_settingsPanel.transform, "  B", 0f, 1f, ac.b, _ => { ApplyAmbientColor(); SaveSettings(); });
 
             // Resolution dropdown.
             CreateDropdown(_settingsPanel.transform, "Sim Resolution",
-                new[] { "960x540", "1920x1080", "2560x1440" },
+                new[] { "960x540", "1280x720", "1600x900", "1920x1080", "2560x1440" },
                 (int)_sim.Resolution,
-                idx => _sim.Resolution = (SimResolution)idx);
+                idx => { _sim.Resolution = (SimResolution)idx; SaveSettings(); });
 
             // Window Scale dropdown.
             CreateDropdown(_settingsPanel.transform, "Window Scale",
                 new[] { "1x", "2x", "3x" },
                 _sim.WindowScale - 1,
-                idx => _sim.WindowScale = idx + 1);
+                idx => { _sim.WindowScale = idx + 1; SaveSettings(); });
 
             // Frame Rate Cap dropdown.
             CreateDropdown(_settingsPanel.transform, "Frame Rate",
                 new[] { "VSync", "60 FPS" },
                 (int)_sim.FrameCap,
-                idx => _sim.FrameCap = (FrameRateCap)idx);
+                idx => { _sim.FrameCap = (FrameRateCap)idx; SaveSettings(); });
 
             _settingsPanel.SetActive(false);
         }
@@ -197,6 +201,52 @@ namespace FallingSand {
             rt.anchoredPosition = new Vector2(8, -8);
             rt.sizeDelta = new Vector2(300, 60);
             _hudText.raycastTarget = false;
+        }
+
+        // ---- PlayerPrefs persistence ----
+
+        private const string PK = "sand_";
+
+        private void LoadSettings() {
+            if (!PlayerPrefs.HasKey(PK + "saved")) return;
+
+            _sim.LightEnabled = PlayerPrefs.GetInt(PK + "lightEnabled", 1) != 0;
+            _sim.LightAngle = PlayerPrefs.GetFloat(PK + "lightAngle", 60f);
+            _sim.LightIntensity = PlayerPrefs.GetFloat(PK + "lightIntensity", 2f);
+            _sim.LightColor = new Color(
+                PlayerPrefs.GetFloat(PK + "lightR", 1f),
+                PlayerPrefs.GetFloat(PK + "lightG", 1f),
+                PlayerPrefs.GetFloat(PK + "lightB", 1f));
+            _sim.AmbientColor = new Color(
+                PlayerPrefs.GetFloat(PK + "ambientR", 0.1f),
+                PlayerPrefs.GetFloat(PK + "ambientG", 0.1f),
+                PlayerPrefs.GetFloat(PK + "ambientB", 0.1f));
+            _sim.Resolution = (SimResolution)PlayerPrefs.GetInt(PK + "resolution", (int)SimResolution.Res1920x1080);
+            _sim.WindowScale = PlayerPrefs.GetInt(PK + "windowScale", 1);
+            _sim.FrameCap = (FrameRateCap)PlayerPrefs.GetInt(PK + "frameCap", 0);
+            _sim.PaintRadius = PlayerPrefs.GetInt(PK + "paintRadius", 5);
+            _sim.SelectedMaterialIndex = PlayerPrefs.GetInt(PK + "selectedMat", 0);
+        }
+
+        private void SaveSettings() {
+            PlayerPrefs.SetInt(PK + "saved", 1);
+            PlayerPrefs.SetInt(PK + "lightEnabled", _sim.LightEnabled ? 1 : 0);
+            PlayerPrefs.SetFloat(PK + "lightAngle", _sim.LightAngle);
+            PlayerPrefs.SetFloat(PK + "lightIntensity", _sim.LightIntensity);
+            var lc = _sim.LightColor;
+            PlayerPrefs.SetFloat(PK + "lightR", lc.r);
+            PlayerPrefs.SetFloat(PK + "lightG", lc.g);
+            PlayerPrefs.SetFloat(PK + "lightB", lc.b);
+            var ac = _sim.AmbientColor;
+            PlayerPrefs.SetFloat(PK + "ambientR", ac.r);
+            PlayerPrefs.SetFloat(PK + "ambientG", ac.g);
+            PlayerPrefs.SetFloat(PK + "ambientB", ac.b);
+            PlayerPrefs.SetInt(PK + "resolution", (int)_sim.Resolution);
+            PlayerPrefs.SetInt(PK + "windowScale", _sim.WindowScale);
+            PlayerPrefs.SetInt(PK + "frameCap", (int)_sim.FrameCap);
+            PlayerPrefs.SetInt(PK + "paintRadius", _sim.PaintRadius);
+            PlayerPrefs.SetInt(PK + "selectedMat", _sim.SelectedMaterialIndex);
+            PlayerPrefs.Save();
         }
 
         // ---- Utilities ----
@@ -418,7 +468,7 @@ namespace FallingSand {
             templateRT.anchorMax = new Vector2(1, 0);
             templateRT.pivot = new Vector2(0.5f, 1f);
             templateRT.anchoredPosition = Vector2.zero;
-            templateRT.sizeDelta = new Vector2(0, 100);
+            templateRT.sizeDelta = new Vector2(0, 150);
             template.GetComponent<Image>().color = new Color(0.2f, 0.2f, 0.2f);
 
             var viewport = new GameObject("Viewport", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Mask));

@@ -6,7 +6,7 @@ using UnityEngine.UI;
 using FallingSand.Scripts;
 
 namespace FallingSand {
-    public enum SimResolution { Res960x540, Res1920x1080, Res2560x1440 }
+    public enum SimResolution { Res960x540, Res1280x720, Res1600x900, Res1920x1080, Res2560x1440 }
     public enum FrameRateCap { VSync, Cap60 }
 
     /// <summary>
@@ -72,8 +72,9 @@ namespace FallingSand {
         private float _fpsTimer;
         private int _fpsCounter;
         private int _fpsDisplay;
-        private float _smoothDeltaTime = 1f / 60f;
         private int _effectiveSteps;
+        private int _stepOffset;
+        private float _prepareFrameAccum = 1f / 60f; // Pre-loaded to trigger on first frame.
 
         // Resources.
         private int _simFrame;
@@ -181,6 +182,7 @@ namespace FallingSand {
         public int LightHeight => _lightTexture ? _lightTexture.height : 0;
         public int FPS => _fpsDisplay;
         public int EffectiveSteps => _effectiveSteps;
+        public int BaseSimSteps => _baseSimSteps;
 
         public FrameRateCap FrameCap {
             get => _frameRateCap;
@@ -206,6 +208,8 @@ namespace FallingSand {
 
         private Vector2Int GetSimDimensions() => _simResolution switch {
             SimResolution.Res960x540   => new(960, 540),
+            SimResolution.Res1280x720   => new(1280, 720),
+            SimResolution.Res1600x900 => new(1600, 900),
             SimResolution.Res1920x1080 => new(1920, 1080),
             SimResolution.Res2560x1440 => new(2560, 1440),
             _ => new(1920, 1080)
@@ -258,6 +262,8 @@ namespace FallingSand {
 
             Screen.SetResolution(simWidth * _windowScale, simHeight * _windowScale, FullScreenMode.Windowed);
             _simFrame = 0;
+            _stepOffset = 0;
+            _prepareFrameAccum = 1f / 60f;
         }
 
         private void ApplyFrameRateCap() {
@@ -376,9 +382,8 @@ namespace FallingSand {
 
             // Scale step count so total steps/sec stays ~constant at baseSteps * 60.
             // Below 60 Hz the sim just slows down (capped at baseSteps).
-            _smoothDeltaTime = Mathf.Lerp(_smoothDeltaTime, Time.unscaledDeltaTime, 0.05f);
             _effectiveSteps = Mathf.Clamp(
-                Mathf.RoundToInt(_baseSimSteps * 60f * _smoothDeltaTime),
+                Mathf.RoundToInt(_baseSimSteps * 60f * Time.unscaledDeltaTime),
                 1, _baseSimSteps
             );
 
@@ -390,18 +395,28 @@ namespace FallingSand {
             _compute.SetInt(ID_SIM_FRAME, _simFrame);
             _compute.SetInt(ID_GRAVITY, _gravity);
 
-            PrepareFrame();
+            // Run PrepareFrame at a fixed ~60 Hz rate so gravity and drag use
+            // full-precision integer values — no truncation from coefficient
+            // scaling. Below 60 Hz it naturally slows down (one per frame).
+            _prepareFrameAccum += Time.unscaledDeltaTime;
+            if (_prepareFrameAccum >= 1f / 60f) {
+                _prepareFrameAccum -= 1f / 60f;
+                if (_prepareFrameAccum >= 1f / 60f) _prepareFrameAccum = 0f;
+                PrepareFrame();
+            }
 
             for (var i = 0; i < _effectiveSteps; i++) {
                 var offset = (_simFrame * _effectiveSteps + i) & 3;
                 for (var p = 0; p < 4; p++)
-                    Simulate((p + offset) & 3, i);
+                    Simulate((p + offset) & 3, _stepOffset + i);
             }
+
+            _stepOffset = (_stepOffset + _effectiveSteps) % _baseSimSteps;
 
             // Light pass at half resolution, amortized at high refresh rates.
             // Skipped entirely when lighting is disabled.
             if (_lightEnabled) {
-                var lightCadence = Mathf.Max(1, Mathf.RoundToInt(1f / (60f * _smoothDeltaTime)));
+                var lightCadence = Mathf.Max(1, Mathf.RoundToInt(1f / (60f * Time.unscaledDeltaTime)));
                 if (_simFrame % lightCadence == 0) {
                     ComputeLight();
                     BlurLight();
