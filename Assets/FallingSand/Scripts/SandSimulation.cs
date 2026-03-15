@@ -38,11 +38,12 @@ namespace FallingSand {
         [Header("Visualization")]
         [SerializeField] private RawImage _tempVis;
         [SerializeField] private Text _hudText;
-        [SerializeField] private Vector2 _lightDirection = new(1f, 2f);
+        [SerializeField] [Range(0f, 360f)] private float _lightAngle = 60f;
         [SerializeField] private Color _lightColor = Color.white;
         [SerializeField] [Range(0f, 5f)] private float _lightIntensity = 2f;
         [SerializeField] private Color _ambientColor = new(0.1f, 0.1f, 0.1f, 1f);
         [SerializeField] [Range(16, 512)] private int _lightMaxSteps = 64;
+        [SerializeField] [Range(1, 4)] private int _lightDownscale = 2;
 
         // The empty material is always index 0 in the GPU buffer.
         // Inspector materials follow starting at index 1.
@@ -64,11 +65,13 @@ namespace FallingSand {
         private ComputeBuffer _simData;
         private ComputeBuffer _materialBuffer;
         private RenderTexture _visTexture;
+        private RenderTexture _lightTexture;
 
         // Kernel handles.
         private int KERNEL_PAINT;
         private int KERNEL_PREPARE_FRAME;
         private int KERNEL_SIM;
+        private int KERNEL_LIGHT;
         private int KERNEL_VIS;
 
         // Shader property IDs.
@@ -92,18 +95,22 @@ namespace FallingSand {
         private static readonly int ID_GRAVITY       = Shader.PropertyToID("_Gravity");
         private static readonly int ID_MATERIALS      = Shader.PropertyToID("_Materials");
         private static readonly int ID_SIM_DATA      = Shader.PropertyToID("_SimData");
-        private static readonly int ID_VIS_TEXTURE   = Shader.PropertyToID("_VisTexture");
+        private static readonly int ID_VIS_TEXTURE      = Shader.PropertyToID("_VisTexture");
+        private static readonly int ID_LIGHT_TEXTURE     = Shader.PropertyToID("_LightTexture");
+        private static readonly int ID_LIGHT_TEXTURE_READ = Shader.PropertyToID("_LightTextureRead");
 
         private static readonly int ID_LIGHT_DIR_X   = Shader.PropertyToID("_LightDirX");
         private static readonly int ID_LIGHT_DIR_Y   = Shader.PropertyToID("_LightDirY");
         private static readonly int ID_LIGHT_COLOR   = Shader.PropertyToID("_LightColor");
         private static readonly int ID_AMBIENT_COLOR = Shader.PropertyToID("_AmbientColor");
         private static readonly int ID_LIGHT_MAX_STEPS = Shader.PropertyToID("_LightMaxSteps");
+        private static readonly int ID_LIGHT_DOWNSCALE = Shader.PropertyToID("_LightDownscale");
 
         private void Start() {
             KERNEL_PAINT   = _compute.FindKernel("Paint");
             KERNEL_PREPARE_FRAME = _compute.FindKernel("PrepareFrame");
             KERNEL_SIM     = _compute.FindKernel("Simulate");
+            KERNEL_LIGHT   = _compute.FindKernel("Light");
             KERNEL_VIS     = _compute.FindKernel("Visualize");
 
             UploadMaterials();
@@ -121,12 +128,21 @@ namespace FallingSand {
 
             _visTexture.Create();
             _tempVis.texture = _visTexture;
+
+            // Downscaled light buffer with bilinear filtering for smooth compositing.
+            _lightTexture = new RenderTexture(simWidth / _lightDownscale, simHeight / _lightDownscale, 0, RenderTextureFormat.ARGBHalf) {
+                enableRandomWrite = true,
+                filterMode = FilterMode.Bilinear,
+                useMipMap = false
+            };
+            _lightTexture.Create();
         }
 
         private void OnDestroy() {
             if (_simData.IsValid()) _simData.Release();
             if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
             if (_visTexture) _visTexture.Release();
+            if (_lightTexture) _lightTexture.Release();
         }
 
         /// <summary>
@@ -191,7 +207,7 @@ namespace FallingSand {
             if (_hudText) {
                 var matName = _materials[_selectedIndex].Name;
                 var mode = _paintReplace ? "Replace" : "Fill";
-                _hudText.text = $"{_fpsDisplay} FPS\n{_visTexture.width}x{_visTexture.height}\n{matName} ({mode})";
+                _hudText.text = $"{_fpsDisplay} FPS\nSim {_visTexture.width}x{_visTexture.height}\nLight {_lightTexture.width}x{_lightTexture.height}\n{matName} ({mode})";
             }
         }
 
@@ -222,7 +238,9 @@ namespace FallingSand {
                     Simulate((p + offset) & 3, i);
             }
 
-            // Visualize with cursor overlay.
+            // Light pass at half resolution, then composite in Visualize.
+            ComputeLight();
+
             var cursorPos = Input.mousePosition;
             var cursorX = Mathf.FloorToInt(cursorPos.x) / _simScale;
             var cursorY = Mathf.FloorToInt(cursorPos.y) / _simScale;
@@ -289,6 +307,7 @@ namespace FallingSand {
             // Bind to all kernels that read _Materials.
             _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_SIM, ID_MATERIALS, _materialBuffer);
+            _compute.SetBuffer(KERNEL_LIGHT, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_VIS, ID_MATERIALS, _materialBuffer);
         }
 
@@ -312,6 +331,29 @@ namespace FallingSand {
             _compute.Dispatch(KERNEL_SIM, groupsX, groupsY, 1);
         }
 
+        private void ComputeLight() {
+            var groupsX = Mathf.CeilToInt((float)_lightTexture.width / 8);
+            var groupsY = Mathf.CeilToInt((float)_lightTexture.height / 8);
+
+            // Convert angle to integer DDA direction.
+            // 0° = right, 90° = up. Scale by 16 for slope precision, flip Y (sim Y=0 is bottom).
+            var rad = _lightAngle * Mathf.Deg2Rad;
+            _compute.SetInt(ID_LIGHT_DIR_X, Mathf.RoundToInt(Mathf.Cos(rad) * 16));
+            _compute.SetInt(ID_LIGHT_DIR_Y, Mathf.RoundToInt(Mathf.Sin(rad) * 16));
+
+            var lc = _lightColor.linear;
+            _compute.SetVector(ID_LIGHT_COLOR, new Vector4(lc.r * _lightIntensity, lc.g * _lightIntensity, lc.b * _lightIntensity, 1f));
+            var ac = _ambientColor.linear;
+            _compute.SetVector(ID_AMBIENT_COLOR, new Vector4(ac.r, ac.g, ac.b, 1f));
+            _compute.SetInt(ID_LIGHT_MAX_STEPS, _lightMaxSteps);
+            _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
+
+            _compute.SetBuffer(KERNEL_LIGHT, ID_SIM_DATA, _simData);
+            _compute.SetTexture(KERNEL_LIGHT, ID_LIGHT_TEXTURE, _lightTexture);
+
+            _compute.Dispatch(KERNEL_LIGHT, groupsX, groupsY, 1);
+        }
+
         private void Visualize(int cursorX, int cursorY) {
             var groupsX = Mathf.CeilToInt((float)_visTexture.width / 8);
             var groupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
@@ -321,20 +363,9 @@ namespace FallingSand {
             _compute.SetInt(ID_CURSOR_R, _paintRadius);
             _compute.SetInt(ID_CURSOR_MAT, _selectedIndex + 1);
 
-            // Convert float light direction to integer DDA direction.
-            // Scale by 16 to preserve slope precision, flip Y (sim Y=0 is bottom).
-            var dir = _lightDirection.normalized;
-            _compute.SetInt(ID_LIGHT_DIR_X, Mathf.RoundToInt(dir.x * 16));
-            _compute.SetInt(ID_LIGHT_DIR_Y, Mathf.RoundToInt(-dir.y * 16));
-
-            var lc = _lightColor.linear;
-            _compute.SetVector(ID_LIGHT_COLOR, new Vector4(lc.r * _lightIntensity, lc.g * _lightIntensity, lc.b * _lightIntensity, 1f));
-            var ac = _ambientColor.linear;
-            _compute.SetVector(ID_AMBIENT_COLOR, new Vector4(ac.r, ac.g, ac.b, 1f));
-            _compute.SetInt(ID_LIGHT_MAX_STEPS, _lightMaxSteps);
-
             _compute.SetBuffer(KERNEL_VIS, ID_SIM_DATA, _simData);
             _compute.SetTexture(KERNEL_VIS, ID_VIS_TEXTURE, _visTexture);
+            _compute.SetTexture(KERNEL_VIS, ID_LIGHT_TEXTURE_READ, _lightTexture);
 
             _compute.Dispatch(KERNEL_VIS, groupsX, groupsY, 1);
         }

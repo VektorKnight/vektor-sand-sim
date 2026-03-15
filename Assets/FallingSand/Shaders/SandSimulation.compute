@@ -7,8 +7,9 @@
 // Frame execution order (driven by SandSimulation.cs):
 //   1. Paint     – write user input into the grid
 //   2. PrepareFrame – clear flags, reset stalled velocity, apply gravity and drag
-//   3. Simulate  – _SimSteps iterations × 4 passes (red, green, blue, yellow) of movement
-//   4. Visualize – write material colors to the output texture
+//   3. Simulate    – _SimSteps iterations × 4 passes (red, green, blue, yellow) of movement
+//   4. Light       – DDA ray-march at half resolution into the light buffer
+//   5. Visualize   – write material colors × sampled light to the output texture
 //
 // Movement and other timing-based behaviors use Bresenham-style gating to get
 // nice behavior over the high step rate.
@@ -26,6 +27,7 @@
 #pragma kernel Paint
 #pragma kernel PrepareFrame
 #pragma kernel Simulate
+#pragma kernel Light
 #pragma kernel Visualize
 
 // Paint params.
@@ -47,6 +49,7 @@ int _LightDirY;
 float4 _LightColor;
 float4 _AmbientColor;
 int _LightMaxSteps;
+int _LightDownscale;
 
 // Simulation params.
 int _SimWidth;  // X dimension of the sim.
@@ -60,7 +63,12 @@ int _Gravity;   // Global downward acceleration. Per-material weight scales this
 // Simulation data buffers.
 StructuredBuffer<MaterialProperties> _Materials;
 RWStructuredBuffer<uint> _SimData;
+RWTexture2D<float4> _LightTexture;  // Half-res, written by Light kernel.
 RWTexture2D<float4> _VisTexture;
+
+// Sampled with bilinear filtering in Visualize.
+Texture2D<float4> _LightTextureRead;
+SamplerState sampler_LightTextureRead;
 
 // Convert a 2D index to 1D buffer.
 int to_flat(int2 i) {
@@ -352,14 +360,35 @@ float3 march_dda(int2 start, int2 light_dir, float3 light_color, float3 ambient_
 }
 
 // ============================================================================
-// Writes material colors to the output texture and draws a cursor ring overlay.
+// Runs the DDA ray-march at half resolution and writes to the light buffer.
+// ============================================================================
+[numthreads(8,8,1)]
+void Light(uint3 id : SV_DispatchThreadID) {
+    // Each light texel maps to an NxN block in the sim grid.
+    const int2 sim_pos = int2(id.xy) * _LightDownscale;
+
+    if (sim_pos.x >= _SimWidth || sim_pos.y >= _SimHeight) {
+        return;
+    }
+
+    const int2 light_dir = int2(_LightDirX, _LightDirY);
+    const float3 light_color = _LightColor.rgb;
+    const float3 ambient_color = _AmbientColor.rgb;
+
+    const float3 result = march_dda(sim_pos, light_dir, light_color, ambient_color, _LightMaxSteps);
+    _LightTexture[id.xy] = float4(result, 1);
+}
+
+// ============================================================================
+// Writes material colors to the output texture, sampling the half-res light
+// buffer with bilinear filtering. Draws a cursor ring overlay.
 // ============================================================================
 [numthreads(8,8,1)]
 void Visualize(uint3 id : SV_DispatchThreadID) {
     if (id.x >= (uint)_SimWidth || id.y >= (uint)_SimHeight) {
         return;
     }
-    
+
     const uint cell = get_cell_data(id.xy);
 
     // Draw cursor ring over everything, including empty cells.
@@ -376,7 +405,7 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
         }
     }
 
-    // Empty cells are clear, skip the march.
+    // Empty cells are clear.
     if (is_empty(cell)) {
         _VisTexture[id.xy] = float4(0, 0, 0, 0);
         return;
@@ -384,17 +413,13 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
 
     const MaterialProperties mat = get_mat_props(cell);
 
-    // Apply per-particle color variation. The 2-bit variant (0-3) maps to
-    // a brightness offset centered around the base color.
+    // Apply per-particle color variation.
     const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
     float3 base_color = float3(saturate(mat.color.rgb + offset));
 
-    // March towards the light to determine final lit material colors.
-    const int2 light_dir = int2(_LightDirX, _LightDirY);
-    const float3 light_color = _LightColor.rgb;
-    const float3 ambient_color = _AmbientColor.rgb;
-
-    base_color *= march_dda(id.xy, light_dir, light_color, ambient_color, _LightMaxSteps);
+    // Sample half-res light buffer with bilinear filtering.
+    const float2 uv = (float2(id.xy) + 0.5) / float2(_SimWidth, _SimHeight);
+    base_color *= _LightTextureRead.SampleLevel(sampler_LightTextureRead, uv, 0).rgb;
 
     _VisTexture[id.xy] = float4(base_color, 1);
 }
