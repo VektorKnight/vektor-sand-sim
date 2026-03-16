@@ -103,7 +103,11 @@ bool try_move(int2 from, int2 to, uint cell) {
         
         if (mat_from.fluidity == 0 && mat_to.fluidity == 0) return false;
         if (mat_to.weight == 0 && mat_to.fluidity == 0) return false;
-        if (mat_from.density <= mat_to.density) return false;
+
+        // Handle gases a bit differently so lighter ones rise through heavier ones with negative gravity.
+        const bool rising = to.y > from.y;
+        if (rising ? (mat_from.density >= mat_to.density) : (mat_from.density <= mat_to.density))
+            return false;
     }
 
     const uint flagged_cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);

@@ -21,6 +21,8 @@ namespace FallingSand.Scripts {
         private bool _settingsOpen;
 
         // Color slider refs for live update.
+        private Toggle _lightToggle;
+        private Slider _lightAngleSlider, _lightIntensitySlider;
         private Slider _lightRSlider, _lightGSlider, _lightBSlider;
         private Slider _ambientRSlider, _ambientGSlider, _ambientBSlider;
 
@@ -165,13 +167,13 @@ namespace FallingSand.Scripts {
             csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
 
             // Lighting toggle.
-            CreateToggle(_settingsPanel.transform, "Lighting", _sim.Lighting.LightEnabled, v => { _sim.Lighting.LightEnabled = v; SaveSettings(); });
+            _lightToggle = CreateToggle(_settingsPanel.transform, "Lighting", _sim.Lighting.LightEnabled, v => { _sim.Lighting.LightEnabled = v; SaveSettings(); });
 
             // Light Angle.
-            CreateSlider(_settingsPanel.transform, "Light Angle", 0f, 360f, _sim.Lighting.LightAngle, v => { _sim.Lighting.LightAngle = v; SaveSettings(); });
+            _lightAngleSlider = CreateSlider(_settingsPanel.transform, "Light Angle", 0f, 360f, _sim.Lighting.LightAngle, v => { _sim.Lighting.LightAngle = v; SaveSettings(); });
 
             // Light Intensity.
-            CreateSlider(_settingsPanel.transform, "Light Intensity", 0f, 5f, _sim.Lighting.LightIntensity, v => { _sim.Lighting.LightIntensity = v; SaveSettings(); });
+            _lightIntensitySlider = CreateSlider(_settingsPanel.transform, "Light Intensity", 0f, 5f, _sim.Lighting.LightIntensity, v => { _sim.Lighting.LightIntensity = v; SaveSettings(); });
 
             // Light Color (RGB).
             CreateText(_settingsPanel.transform, "Light Color", 11, TextAnchor.MiddleLeft);
@@ -186,6 +188,19 @@ namespace FallingSand.Scripts {
             _ambientRSlider = CreateSlider(_settingsPanel.transform, "  R", 0f, 1f, ac.r, _ => { ApplyAmbientColor(); SaveSettings(); });
             _ambientGSlider = CreateSlider(_settingsPanel.transform, "  G", 0f, 1f, ac.g, _ => { ApplyAmbientColor(); SaveSettings(); });
             _ambientBSlider = CreateSlider(_settingsPanel.transform, "  B", 0f, 1f, ac.b, _ => { ApplyAmbientColor(); SaveSettings(); });
+
+            // Reset lighting to defaults.
+            var resetBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, 24), ResetLighting);
+            var resetLE = resetBtn.gameObject.AddComponent<LayoutElement>();
+            resetLE.preferredHeight = 24;
+            resetLE.flexibleWidth = 1;
+            var resetLabel = CreateText(resetBtn.transform, "Reset Lighting", 11, TextAnchor.MiddleCenter);
+            resetLabel.raycastTarget = false;
+            var resetLabelRT = resetLabel.GetComponent<RectTransform>();
+            resetLabelRT.anchorMin = Vector2.zero;
+            resetLabelRT.anchorMax = Vector2.one;
+            resetLabelRT.offsetMin = Vector2.zero;
+            resetLabelRT.offsetMax = Vector2.zero;
 
             // Resolution dropdown.
             CreateDropdown(_settingsPanel.transform, "Sim Resolution",
@@ -205,6 +220,19 @@ namespace FallingSand.Scripts {
                 (int)_sim.FrameCap,
                 idx => { _sim.FrameCap = (FrameRateCap)idx; SaveSettings(); });
 
+            // Clear simulation.
+            var clearBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, 24), () => _sim.RecreateSimulation());
+            var clearLE = clearBtn.gameObject.AddComponent<LayoutElement>();
+            clearLE.preferredHeight = 24;
+            clearLE.flexibleWidth = 1;
+            var clearLabel = CreateText(clearBtn.transform, "Clear Simulation", 11, TextAnchor.MiddleCenter);
+            clearLabel.raycastTarget = false;
+            var clearLabelRT = clearLabel.GetComponent<RectTransform>();
+            clearLabelRT.anchorMin = Vector2.zero;
+            clearLabelRT.anchorMax = Vector2.one;
+            clearLabelRT.offsetMin = Vector2.zero;
+            clearLabelRT.offsetMax = Vector2.zero;
+
             _settingsPanel.SetActive(false);
         }
 
@@ -214,6 +242,26 @@ namespace FallingSand.Scripts {
 
         private void ApplyAmbientColor() {
             _sim.Lighting.AmbientColor = new Color(_ambientRSlider.value, _ambientGSlider.value, _ambientBSlider.value);
+        }
+
+        private void ResetLighting() {
+            _sim.Lighting.ResetToDefaults();
+
+            _lightToggle.isOn = _sim.Lighting.LightEnabled;
+            _lightAngleSlider.value = _sim.Lighting.LightAngle;
+            _lightIntensitySlider.value = _sim.Lighting.LightIntensity;
+
+            var lc = _sim.Lighting.LightColor;
+            _lightRSlider.value = lc.r;
+            _lightGSlider.value = lc.g;
+            _lightBSlider.value = lc.b;
+
+            var ac = _sim.Lighting.AmbientColor;
+            _ambientRSlider.value = ac.r;
+            _ambientGSlider.value = ac.g;
+            _ambientBSlider.value = ac.b;
+
+            SaveSettings();
         }
 
         // ---- HUD ----
@@ -233,7 +281,16 @@ namespace FallingSand.Scripts {
 
         private const string PK = "sand_";
 
+        private static bool ShouldPersist() {
+#if UNITY_EDITOR
+            return false;
+#else
+            return true;
+#endif
+        }
+
         private void LoadSettings() {
+            if (!ShouldPersist()) return;
             if (!PlayerPrefs.HasKey(PK + "saved")) return;
 
             _sim.Lighting.LightEnabled = PlayerPrefs.GetInt(PK + "lightEnabled", 1) != 0;
@@ -255,6 +312,7 @@ namespace FallingSand.Scripts {
         }
 
         private void SaveSettings() {
+            if (!ShouldPersist()) return;
             PlayerPrefs.SetInt(PK + "saved", 1);
             PlayerPrefs.SetInt(PK + "lightEnabled", _sim.Lighting.LightEnabled ? 1 : 0);
             PlayerPrefs.SetFloat(PK + "lightAngle", _sim.Lighting.LightAngle);
@@ -284,7 +342,7 @@ namespace FallingSand.Scripts {
 
         // ---- Helper methods ----
 
-        private static void CreateToggle(Transform parent, string label, bool value, Action<bool> onChange) {
+        private static Toggle CreateToggle(Transform parent, string label, bool value, Action<bool> onChange) {
             var row = new GameObject(label + "Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
             row.transform.SetParent(parent, false);
             var hlg = row.GetComponent<HorizontalLayoutGroup>();
@@ -336,8 +394,8 @@ namespace FallingSand.Scripts {
             toggle.graphic = check.GetComponent<Image>();
             toggle.isOn = value;
             toggle.onValueChanged.AddListener(v => onChange(v));
+            return toggle;
         }
-
 
         private static GameObject CreatePanel(Transform parent, string name, Color color) {
             var go = new GameObject(name, typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));

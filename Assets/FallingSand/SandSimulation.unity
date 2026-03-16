@@ -269,7 +269,7 @@ MonoBehaviour:
   _paintRadiusMin: 1
   _paintRadiusMax: 50
   _gravity: 16
-  _simResolution: 1
+  _simResolution: 2
   _windowScale: 1
   _baseSimSteps: 128
   _frameRateCap: 1
@@ -312,7 +312,7 @@ MonoBehaviour:
   _lightDownscale: 4
   _lightBlurPasses: 3
   _lightEnabled: 1
-  _emissionMaxSteps: 128
+  _emissionMaxSteps: 192
 --- !u!1 &677317740
 GameObject:
   m_ObjectHideFlags: 0

@@ -117,7 +117,7 @@ namespace FallingSand.Scripts {
                 Name = "Ice", Description = "Transparent solid. Melts in water and fire.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
                 Variation = 0.5f, Opacity = 0.06f,
-                Color = new Color(0.4f, 0.75f, 0.85f, 0.4f),
+                Color = new Color(0.4f, 0.75f, 0.85f, 0.6f),
             },
 
             // Granulars
@@ -143,7 +143,7 @@ namespace FallingSand.Scripts {
                 Name = "Gunpowder", Description = "Flammable granular. Ignites almost instantly.",
                 Fluidity = 0, Density = 160, Weight = 128, Drag = 128,
                 Variation = 0.15f, Opacity = 1f,
-                Color = new Color(0.25f, 0.2f, 0.22f),
+                Color = new Color(0.27f, 0.25f, 0.22f),
             },
 
             // Liquids
@@ -151,7 +151,7 @@ namespace FallingSand.Scripts {
                 Name = "Water", Description = "Fluid. Extinguishes fire, boils on lava.",
                 Fluidity = 255, Density = 100, Weight = 96, Drag = 128,
                 Variation = 0.1f, Opacity = 0.01f,
-                Color = new Color(0.14509802f, 0.36678076f, 0.7921569f, 0.6f),
+                Color = new Color(0.14509802f, 0.36678076f, 0.7921569f, 0.7f),
             },
             new() {
                 Name = "Oil", Description = "Viscous fluid. Floats on water, flammable.",
@@ -165,15 +165,15 @@ namespace FallingSand.Scripts {
                 Variation = 0.2f, Opacity = 0.08f,
                 EmissionColor = new Color(0.2f, 1f, 0.1f),
                 EmissionIntensity = 0.4f,
-                Color = new Color(0.3f, 0.85f, 0.15f, 0.7f),
+                Color = new Color(0.3f, 0.85f, 0.15f, 0.8f),
             },
             new() {
                 Name = "Lava", Description = "Viscous emissive fluid. Ignites flammables, melts sand into glass.",
                 Fluidity = 4, Density = 125, Weight = 128, Drag = 192,
                 Variation = 0.05f, Opacity = 0.4f,
-                EmissionColor = new Color(1f, 0.5f, 0.1f),
+                EmissionColor = new Color(1f, 0.4f, 0.1f),
                 EmissionIntensity = 3f,
-                Color = new Color(0.45f, 0.12f, 0.02f),
+                Color = new Color(0.75f, 0.12f, 0.02f),
             },
 
             // Hot
@@ -213,7 +213,7 @@ namespace FallingSand.Scripts {
                 Name = "Smoke", Description = "Buoyant gas. Dissipates over time.",
                 Fluidity = 64, Density = 8, Weight = -48, Drag = 230,
                 Variation = 0.2f, Opacity = 0.1f,
-                Color = new Color(0.15f, 0.15f, 0.15f, 0.4f),
+                Color = new Color(0.2f, 0.2f, 0.15f, 0.7f),
             },
         };
 

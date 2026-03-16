@@ -18,6 +18,13 @@ namespace FallingSand.Scripts {
         [SerializeField] private bool _lightEnabled = true;
         [SerializeField] [Range(8, 256)] private int _emissionMaxSteps = 32;
 
+        // Defaults captured from inspector before PlayerPrefs overrides.
+        private float _defaultAngle;
+        private float _defaultIntensity;
+        private Color _defaultLightColor;
+        private Color _defaultAmbientColor;
+        private bool _defaultEnabled;
+
         // Kernel handles.
         private int KERNEL_LIGHT;
         private int KERNEL_EMISSION;
@@ -88,11 +95,26 @@ namespace FallingSand.Scripts {
         // --- Initialization ---
 
         public void Initialize() {
+            // Snapshot inspector defaults before PlayerPrefs overrides them.
+            _defaultEnabled = _lightEnabled;
+            _defaultAngle = _lightAngle;
+            _defaultIntensity = _lightIntensity;
+            _defaultLightColor = _lightColor;
+            _defaultAmbientColor = _ambientColor;
+
             KERNEL_LIGHT   = _compute.FindKernel("Light");
             KERNEL_EMISSION = _compute.FindKernel("Emission");
             KERNEL_BLUR_H  = _compute.FindKernel("BlurH");
             KERNEL_BLUR_V  = _compute.FindKernel("BlurV");
             KERNEL_VIS     = _compute.FindKernel("Visualize");
+        }
+
+        public void ResetToDefaults() {
+            _lightEnabled = _defaultEnabled;
+            _lightAngle = _defaultAngle;
+            _lightIntensity = _defaultIntensity;
+            _lightColor = _defaultLightColor;
+            _ambientColor = _defaultAmbientColor;
         }
 
         public void BindMaterials(ComputeBuffer materialBuffer) {
