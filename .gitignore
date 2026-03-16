@@ -34,3 +34,4 @@ Thumbs.db
 sysinfo.txt
 crashlytics-build.properties
 .vsconfig
+/memory

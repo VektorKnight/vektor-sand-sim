@@ -1,2 +1,0 @@
-- [user_profile.md](user_profile.md) — Graphics/sim programmer, GPU falling-sand sim in Unity
-- [project_material_refactor.md](project_material_refactor.md) — Ongoing refactor: struct-driven MaterialProperties buffer replacing hardcoded branching
