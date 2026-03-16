@@ -246,6 +246,7 @@ GameObject:
   m_Component:
   - component: {fileID: 263843365}
   - component: {fileID: 263843364}
+  - component: {fileID: 263843366}
   m_Layer: 0
   m_Name: SandSimulation
   m_TagString: Untagged
@@ -268,97 +269,6 @@ MonoBehaviour:
   _paintRadius: 8
   _paintRadiusMin: 1
   _paintRadiusMax: 50
-  _materials:
-  - Name: Stone
-    Fluidity: 0
-    Density: 255
-    Weight: 0
-    Drag: 0
-    Variation: 0.25
-    Opacity: 1
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.38679248, g: 0.38679248, b: 0.38679248, a: 1}
-  - Name: Gravel
-    Fluidity: 0
-    Density: 200
-    Weight: 128
-    Drag: 96
-    Variation: 0.1
-    Opacity: 1
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.28, g: 0.28, b: 0.28, a: 1}
-  - Name: Sand
-    Fluidity: 0
-    Density: 150
-    Weight: 128
-    Drag: 128
-    Variation: 0.5
-    Opacity: 0.7
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.8207547, g: 0.5865165, b: 0.32907617, a: 1}
-  - Name: Snow
-    Fluidity: 1
-    Density: 50
-    Weight: 128
-    Drag: 192
-    Variation: 0.5
-    Opacity: 0.04
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.58526164, g: 0.7553496, b: 0.9056604, a: 1}
-  - Name: Ice
-    Fluidity: 0
-    Density: 255
-    Weight: 0
-    Drag: 0
-    Variation: 0.5
-    Opacity: 0.06
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.49019608, g: 0.8235294, b: 0.8862745, a: 1}
-  - Name: Water
-    Fluidity: 255
-    Density: 100
-    Weight: 128
-    Drag: 128
-    Variation: 0.1
-    Opacity: 0.01
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.14509802, g: 0.36678076, b: 0.7921569, a: 1}
-  - Name: Oil
-    Fluidity: 64
-    Density: 70
-    Weight: 128
-    Drag: 128
-    Variation: 0.1
-    Opacity: 0.1
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.43529412, g: 0.29143146, b: 0.23529412, a: 1}
-  - Name: Tar
-    Fluidity: 8
-    Density: 125
-    Weight: 128
-    Drag: 192
-    Variation: 0.05
-    Opacity: 0.4
-    EmissionColor: {r: 0, g: 0, b: 0, a: 1}
-    EmissionIntensity: 0
-    Color: {r: 0.1981132, g: 0.16914383, b: 0.16914383, a: 1}
-  - Name: Lava
-    Fluidity: 4
-    Density: 125
-    Weight: 128
-    Drag: 192
-    Variation: 0.05
-    Opacity: 0.4
-    EmissionColor: {r: 1, g: 0.49085784, b: 0, a: 1}
-    EmissionIntensity: 0.4
-    Color: {r: 0.35220122, g: 0.04995762, b: 0, a: 1}
   _gravity: 16
   _simResolution: 1
   _windowScale: 1
@@ -366,17 +276,7 @@ MonoBehaviour:
   _frameRateCap: 0
   _compute: {fileID: 7200000, guid: 729394d490e7540cba9d9ce75f2b9c43, type: 3}
   _tempVis: {fileID: 677317741}
-  _lightAngle: 60
-  _lightColor: {r: 1, g: 1, b: 1, a: 1}
-  _lightIntensity: 2.25
-  _ambientColor: {r: 0.6, g: 0.6, b: 0.6, a: 1}
-  _lightMaxSteps: 512
-  _lightDownscale: 4
-  _lightBlurPasses: 3
-  _lightEnabled: 1
-  _emissionMaxSteps: 128
-  _bounceIntensity: 1
-  _bounceMaxSteps: 256
+  _lighting: {fileID: 263843366}
 --- !u!4 &263843365
 Transform:
   m_ObjectHideFlags: 0
@@ -392,6 +292,28 @@ Transform:
   m_Children: []
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &263843366
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 263843363}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: bfc9ee1caaca940e7bece26a649e037c, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::FallingSand.SandLightingController
+  _compute: {fileID: 7200000, guid: 1290b8069b2f54e598ebc97a242cea03, type: 3}
+  _lightAngle: 60
+  _lightColor: {r: 1, g: 1, b: 1, a: 1}
+  _lightIntensity: 2.25
+  _ambientColor: {r: 0.1, g: 0.1, b: 0.1, a: 1}
+  _lightMaxSteps: 1024
+  _lightDownscale: 2
+  _lightBlurPasses: 3
+  _lightEnabled: 1
+  _emissionMaxSteps: 128
 --- !u!1 &677317740
 GameObject:
   m_ObjectHideFlags: 0

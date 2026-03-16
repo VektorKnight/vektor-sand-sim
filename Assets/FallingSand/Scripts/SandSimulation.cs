@@ -1,16 +1,17 @@
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Profiling;
 using UnityEngine.UI;
-using FallingSand.Scripts;
 
-namespace FallingSand {
+namespace FallingSand.Scripts {
     public enum SimResolution { Res960x540, Res1280x720, Res1600x900, Res1920x1080, Res2560x1440 }
     public enum FrameRateCap { VSync, Cap60 }
 
     /// <summary>
     /// Drives the falling-sand compute simulation and handles user input.
+    /// Lighting is delegated to SandLightingController.
     ///
     /// Controls:
     ///   Left click        – paint selected material
@@ -20,6 +21,7 @@ namespace FallingSand {
     ///   Insert            – toggle replacement paint mode
     /// </summary>
     public class SandSimulation : MonoBehaviour {
+        // Fix for windows to maintain proper resolution on high DPI.
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
@@ -33,13 +35,6 @@ namespace FallingSand {
         [SerializeField] private int _paintRadiusMin = 1;
         [SerializeField] private int _paintRadiusMax = 50;
 
-        [Header("Materials")]
-        [SerializeField] private MaterialDefinition[] _materials = {
-            new() { Name = "Stone", Fluidity = 0,  Density = 255, Weight = 0,    Drag = 0,   Opacity = 3f,   Color = new Color(0.5f, 0.5f, 0.5f) },
-            new() { Name = "Sand",  Fluidity = 0,  Density = 200, Weight = 256,  Drag = 16,  Opacity = 2f,   Color = new Color(0.9f, 0.8f, 0.5f) },
-            new() { Name = "Water", Fluidity = 64, Density = 100, Weight = 256,  Drag = 32,  Opacity = 0.5f, Color = new Color(0.2f, 0.4f, 0.9f) },
-        };
-
         [Header("Simulation")]
         [SerializeField] private int _gravity = 16;
         [SerializeField] private SimResolution _simResolution = SimResolution.Res1920x1080;
@@ -50,24 +45,26 @@ namespace FallingSand {
 
         [Header("Visualization")]
         [SerializeField] private RawImage _tempVis;
-        [SerializeField] [Range(0f, 360f)] private float _lightAngle = 60f;
-        [SerializeField] private Color _lightColor = Color.white;
-        [SerializeField] [Range(0f, 5f)] private float _lightIntensity = 2f;
-        [SerializeField] private Color _ambientColor = new(0.1f, 0.1f, 0.1f, 1f);
-        [SerializeField] [Range(16, 1024)] private int _lightMaxSteps = 64;
-        [SerializeField] [Range(1, 4)] private int _lightDownscale = 2;
-        [SerializeField] [Range(1, 8)] private int _lightBlurPasses = 3;
-        [SerializeField] private bool _lightEnabled = true;
-        [SerializeField] [Range(8, 256)] private int _emissionMaxSteps = 32;
-        [SerializeField] [Range(0f, 1f)] private float _bounceIntensity = 0.3f;
-        [SerializeField] [Range(8, 256)] private int _bounceMaxSteps = 32;
+        [SerializeField] private SandLightingController _lighting;
 
-        // The empty material is always index 0 in the GPU buffer.
-        // Inspector materials follow starting at index 1.
-        private static readonly MaterialProperties EmptyMaterial = new(0, 0, 0, 0, 0f, default, default, default);
+        // GPU-side interaction structs. Must match SandUtil.hlsl layout.
+        [StructLayout(LayoutKind.Sequential)]
+        private struct GpuReactionRule {
+            public uint Source;
+            public uint Trigger;
+            public uint Result;
+            public float Probability;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct GpuDecayRule {
+            public uint Source;
+            public uint Result;
+            public float Probability;
+        }
 
         // Paint state.
-        private int _selectedIndex;
+        private int _selectedIndex = 1;
         private bool _paintReplace;
         private Vector2Int _lastPaintPos;
         private bool _wasPainting;
@@ -78,16 +75,17 @@ namespace FallingSand {
         private int _fpsDisplay;
         private int _effectiveSteps;
         private int _stepOffset;
-        private float _prepareFrameAccum = 1f / 60f; // Pre-loaded to trigger on first frame.
+        private float _prepareFrameAccum = 1f / 60f;
 
         // Resources.
         private int _simFrame;
         private ComputeBuffer _simData;
         private ComputeBuffer _materialBuffer;
+        private ComputeBuffer _reactionBuffer;
+        private ComputeBuffer _decayBuffer;
         private RenderTexture _visTexture;
         private RenderTexture _lightTexture;
         private RenderTexture _lightTextureTemp;
-        private RenderTexture _emissionTexture;
 
         // Deferred recreation flag.
         private bool _pendingRecreate;
@@ -96,87 +94,36 @@ namespace FallingSand {
         private int KERNEL_PAINT;
         private int KERNEL_PREPARE_FRAME;
         private int KERNEL_SIM;
-        private int KERNEL_LIGHT;
-        private int KERNEL_EMISSION;
-        private int KERNEL_BLUR_H;
-        private int KERNEL_BLUR_V;
-        private int KERNEL_VIS;
 
         // Shader property IDs.
-        private static readonly int ID_PAINT_X       = Shader.PropertyToID("_PaintX");
-        private static readonly int ID_PAINT_Y       = Shader.PropertyToID("_PaintY");
-        private static readonly int ID_PAINT_R       = Shader.PropertyToID("_PaintR");
-        private static readonly int ID_PAINT_TYPE    = Shader.PropertyToID("_PaintType");
-        private static readonly int ID_PAINT_REPLACE = Shader.PropertyToID("_PaintReplace");
+        private static readonly int ID_PAINT_X          = Shader.PropertyToID("_PaintX");
+        private static readonly int ID_PAINT_Y          = Shader.PropertyToID("_PaintY");
+        private static readonly int ID_PAINT_R          = Shader.PropertyToID("_PaintR");
+        private static readonly int ID_PAINT_TYPE       = Shader.PropertyToID("_PaintType");
+        private static readonly int ID_PAINT_REPLACE    = Shader.PropertyToID("_PaintReplace");
 
-        private static readonly int ID_CURSOR_X      = Shader.PropertyToID("_CursorX");
-        private static readonly int ID_CURSOR_Y      = Shader.PropertyToID("_CursorY");
-        private static readonly int ID_CURSOR_R      = Shader.PropertyToID("_CursorR");
-        private static readonly int ID_CURSOR_MAT    = Shader.PropertyToID("_CursorMat");
-
-        private static readonly int ID_SIM_WIDTH     = Shader.PropertyToID("_SimWidth");
-        private static readonly int ID_SIM_HEIGHT    = Shader.PropertyToID("_SimHeight");
-        private static readonly int ID_SIM_STEPS     = Shader.PropertyToID("_SimSteps");
-        private static readonly int ID_SIM_STEP      = Shader.PropertyToID("_SimStep");
-        private static readonly int ID_SIM_FRAME     = Shader.PropertyToID("_SimFrame");
-        private static readonly int ID_SIM_PASS      = Shader.PropertyToID("_SimPass");
-        private static readonly int ID_GRAVITY       = Shader.PropertyToID("_Gravity");
-        private static readonly int ID_MATERIALS      = Shader.PropertyToID("_Materials");
-        private static readonly int ID_SIM_DATA      = Shader.PropertyToID("_SimData");
-        private static readonly int ID_VIS_TEXTURE      = Shader.PropertyToID("_VisTexture");
-        private static readonly int ID_LIGHT_TEXTURE      = Shader.PropertyToID("_LightTexture");
-        private static readonly int ID_LIGHT_TEXTURE_TEMP = Shader.PropertyToID("_LightTextureTemp");
-        private static readonly int ID_LIGHT_TEXTURE_READ = Shader.PropertyToID("_LightTextureRead");
-        private static readonly int ID_LIGHT_WIDTH   = Shader.PropertyToID("_LightWidth");
-        private static readonly int ID_LIGHT_HEIGHT  = Shader.PropertyToID("_LightHeight");
-
-        private static readonly int ID_LIGHT_DIR_X   = Shader.PropertyToID("_LightDirX");
-        private static readonly int ID_LIGHT_DIR_Y   = Shader.PropertyToID("_LightDirY");
-        private static readonly int ID_LIGHT_COLOR   = Shader.PropertyToID("_LightColor");
-        private static readonly int ID_AMBIENT_COLOR = Shader.PropertyToID("_AmbientColor");
-        private static readonly int ID_LIGHT_MAX_STEPS = Shader.PropertyToID("_LightMaxSteps");
-        private static readonly int ID_LIGHT_DOWNSCALE = Shader.PropertyToID("_LightDownscale");
-        private static readonly int ID_EMISSION_MAX_STEPS = Shader.PropertyToID("_EmissionMaxSteps");
-        private static readonly int ID_EMISSION_TEXTURE = Shader.PropertyToID("_EmissionTexture");
-        private static readonly int ID_EMISSION_TEXTURE_READ = Shader.PropertyToID("_EmissionTextureRead");
-        private static readonly int ID_LIGHT_ENABLED  = Shader.PropertyToID("_LightEnabled");
-        private static readonly int ID_BOUNCE_DIR_X   = Shader.PropertyToID("_BounceDirX");
-        private static readonly int ID_BOUNCE_DIR_Y   = Shader.PropertyToID("_BounceDirY");
-        private static readonly int ID_BOUNCE_INTENSITY = Shader.PropertyToID("_BounceIntensity");
-        private static readonly int ID_BOUNCE_MAX_STEPS = Shader.PropertyToID("_BounceMaxSteps");
+        private static readonly int ID_SIM_WIDTH        = Shader.PropertyToID("_SimWidth");
+        private static readonly int ID_SIM_HEIGHT       = Shader.PropertyToID("_SimHeight");
+        private static readonly int ID_SIM_STEPS        = Shader.PropertyToID("_SimSteps");
+        private static readonly int ID_SIM_STEP         = Shader.PropertyToID("_SimStep");
+        private static readonly int ID_SIM_FRAME        = Shader.PropertyToID("_SimFrame");
+        private static readonly int ID_SIM_PASS         = Shader.PropertyToID("_SimPass");
+        private static readonly int ID_GRAVITY          = Shader.PropertyToID("_Gravity");
+        private static readonly int ID_MATERIALS        = Shader.PropertyToID("_Materials");
+        private static readonly int ID_SIM_DATA         = Shader.PropertyToID("_SimData");
+        private static readonly int ID_REACTIONS        = Shader.PropertyToID("_Reactions");
+        private static readonly int ID_DECAY            = Shader.PropertyToID("_Decay");
+        private static readonly int ID_REACTION_COUNT   = Shader.PropertyToID("_ReactionCount");
+        private static readonly int ID_DECAY_COUNT      = Shader.PropertyToID("_DecayCount");
 
         // --- Public API ---
 
-        public MaterialDefinition[] Materials => _materials;
+        public IReadOnlyList<MaterialDefinition> Materials => MaterialTable.Materials;
+        public SandLightingController Lighting => _lighting;
 
         public int SelectedMaterialIndex {
             get => _selectedIndex;
-            set => _selectedIndex = Mathf.Clamp(value, 0, _materials.Length - 1);
-        }
-
-        public float LightAngle {
-            get => _lightAngle;
-            set => _lightAngle = value;
-        }
-
-        public float LightIntensity {
-            get => _lightIntensity;
-            set => _lightIntensity = value;
-        }
-
-        public Color LightColor {
-            get => _lightColor;
-            set => _lightColor = value;
-        }
-
-        public Color AmbientColor {
-            get => _ambientColor;
-            set => _ambientColor = value;
-        }
-
-        public int LightMaxSteps {
-            get => _lightMaxSteps;
-            set => _lightMaxSteps = value;
+            set => _selectedIndex = Mathf.Clamp(value, 1, Materials.Count - 1);
         }
 
         public int PaintRadius {
@@ -202,11 +149,6 @@ namespace FallingSand {
             set { _frameRateCap = value; ApplyFrameRateCap(); }
         }
 
-        public bool LightEnabled {
-            get => _lightEnabled;
-            set => _lightEnabled = value;
-        }
-
         public SimResolution Resolution {
             get => _simResolution;
             set { _simResolution = value; _pendingRecreate = true; }
@@ -217,36 +159,34 @@ namespace FallingSand {
             set { _windowScale = Mathf.Clamp(value, 1, 3); _pendingRecreate = true; }
         }
 
-        // --- Resolution helpers ---
+        // --- Resolution ---
 
         private Vector2Int GetSimDimensions() => _simResolution switch {
             SimResolution.Res960x540   => new(960, 540),
-            SimResolution.Res1280x720   => new(1280, 720),
-            SimResolution.Res1600x900 => new(1600, 900),
+            SimResolution.Res1280x720  => new(1280, 720),
+            SimResolution.Res1600x900  => new(1600, 900),
             SimResolution.Res1920x1080 => new(1920, 1080),
             SimResolution.Res2560x1440 => new(2560, 1440),
             _ => new(1920, 1080)
         };
 
         public void RecreateSimulation() {
-            // Flush pending GPU work before releasing resources so in-flight
-            // dispatches from the previous frame don't alias the new allocations.
             GL.Flush();
-
-            if (_simData != null && _simData.IsValid()) _simData.Release();
+            
             _tempVis.texture = null;
+
+            if (_simData != null && _simData.IsValid()) {_simData.Release();}
             if (_visTexture) Destroy(_visTexture);
             if (_lightTexture) Destroy(_lightTexture);
             if (_lightTextureTemp) Destroy(_lightTextureTemp);
-            if (_emissionTexture) Destroy(_emissionTexture);
 
             var dims = GetSimDimensions();
             var simWidth = dims.x;
             var simHeight = dims.y;
 
             _simData = new ComputeBuffer(simWidth * simHeight, sizeof(int));
-            // DX12 does not guarantee zero-initialized memory. Garbage data
-            // would appear as random non-empty cells with invalid material IDs.
+            
+            // DX12/VK do not zero new buffers.
             _simData.SetData(new int[simWidth * simHeight]);
 
             _visTexture = new RenderTexture(simWidth, simHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) {
@@ -254,17 +194,21 @@ namespace FallingSand {
                 filterMode = FilterMode.Point,
                 useMipMap = false
             };
+            
             _visTexture.Create();
+            
             _tempVis.texture = _visTexture;
 
-            var lightW = simWidth / _lightDownscale;
-            var lightH = simHeight / _lightDownscale;
+            var downscale = _lighting ? _lighting.LightDownscale : 2;
+            var lightW = simWidth / downscale;
+            var lightH = simHeight / downscale;
 
             _lightTexture = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
                 enableRandomWrite = true,
                 filterMode = FilterMode.Bilinear,
                 useMipMap = false
             };
+            
             _lightTexture.Create();
 
             _lightTextureTemp = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
@@ -272,14 +216,8 @@ namespace FallingSand {
                 filterMode = FilterMode.Bilinear,
                 useMipMap = false
             };
+            
             _lightTextureTemp.Create();
-
-            _emissionTexture = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
-                enableRandomWrite = true,
-                filterMode = FilterMode.Bilinear,
-                useMipMap = false
-            };
-            _emissionTexture.Create();
 
             Screen.SetResolution(simWidth * _windowScale, simHeight * _windowScale, FullScreenMode.Windowed);
             _simFrame = 0;
@@ -303,14 +241,11 @@ namespace FallingSand {
         // --- Lifecycle ---
 
         private void Start() {
-            KERNEL_PAINT   = _compute.FindKernel("Paint");
-            KERNEL_PREPARE_FRAME = _compute.FindKernel("PrepareFrame");
-            KERNEL_SIM     = _compute.FindKernel("Simulate");
-            KERNEL_LIGHT   = _compute.FindKernel("Light");
-            KERNEL_EMISSION = _compute.FindKernel("Emission");
-            KERNEL_BLUR_H  = _compute.FindKernel("BlurH");
-            KERNEL_BLUR_V  = _compute.FindKernel("BlurV");
-            KERNEL_VIS     = _compute.FindKernel("Visualize");
+            KERNEL_PAINT            = _compute.FindKernel("Paint");
+            KERNEL_PREPARE_FRAME    = _compute.FindKernel("PrepareFrame");
+            KERNEL_SIM              = _compute.FindKernel("Simulate");
+
+            _lighting.Initialize();
 
             UploadMaterials();
             RecreateSimulation();
@@ -320,22 +255,18 @@ namespace FallingSand {
         }
 
         private void OnDestroy() {
-            if (_simData != null && _simData.IsValid()) _simData.Release();
-            if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
-            if (_visTexture) Destroy(_visTexture);
-            if (_lightTexture) Destroy(_lightTexture);
-            if (_lightTextureTemp) Destroy(_lightTextureTemp);
-            if (_emissionTexture) Destroy(_emissionTexture);
+            if (_simData != null && _simData.IsValid())                 _simData.Release();
+            if (_materialBuffer != null && _materialBuffer.IsValid())   _materialBuffer.Release();
+            if (_reactionBuffer != null && _reactionBuffer.IsValid())   _reactionBuffer.Release();
+            if (_decayBuffer != null && _decayBuffer.IsValid())         _decayBuffer.Release();
+            
+            if (_visTexture)        Destroy(_visTexture);
+            if (_lightTexture)      Destroy(_lightTexture);
+            if (_lightTextureTemp)  Destroy(_lightTextureTemp);
         }
 
-        /// <summary>
-        /// Input handling and simulation run together in Update — one sim tick per
-        /// render frame. Step count scales inversely with frame rate so visual speed
-        /// stays consistent across refresh rates. Below the 60 Hz baseline the sim
-        /// simply slows down instead of trying to catch up.
-        /// </summary>
         private void Update() {
-            if (!_compute || !_simData.IsValid()) return;
+            if (!_compute || !_lighting || !_lighting.IsReady || !_simData.IsValid()) return;
 
             // FPS counter.
             _fpsCounter++;
@@ -346,13 +277,12 @@ namespace FallingSand {
                 _fpsTimer -= 1f;
             }
 
-            // --- Input (guarded by UI hover) ---
+            // Guard UI input.
             var overUI = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
 
             if (overUI) {
                 _wasPainting = false;
             } else {
-                // macOS translates shift+scroll from vertical to horizontal at the OS level.
                 var delta = Input.mouseScrollDelta;
                 var scroll = delta.y != 0 ? delta.y : delta.x;
 
@@ -360,8 +290,8 @@ namespace FallingSand {
                     var shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
 
                     if (shiftHeld) {
-                        var count = _materials.Length;
-                        _selectedIndex = ((_selectedIndex + (scroll > 0 ? 1 : -1)) % count + count) % count;
+                        var count = Materials.Count - 1;
+                        _selectedIndex = (_selectedIndex - 1 + (scroll > 0 ? 1 : -1) + count) % count + 1;
                     } else {
                         _paintRadius += scroll > 0 ? 1 : -1;
                         _paintRadius = Mathf.Clamp(_paintRadius, _paintRadiusMin, _paintRadiusMax);
@@ -372,7 +302,6 @@ namespace FallingSand {
                     _paintReplace = !_paintReplace;
                 }
 
-                // Paint or erase with line interpolation for fast mouse movement.
                 var painting = Input.GetKey(KeyCode.Mouse0);
                 var erasing  = Input.GetKey(KeyCode.Mouse1);
 
@@ -382,7 +311,7 @@ namespace FallingSand {
                         Mathf.FloorToInt(mousePos.x * _visTexture.width / Screen.width),
                         Mathf.FloorToInt(mousePos.y * _visTexture.height / Screen.height)
                     );
-                    var mat = erasing ? 0 : _selectedIndex + 1;
+                    var mat = erasing ? 0 : _selectedIndex;
 
                     if (_wasPainting) {
                         PaintLine(_lastPaintPos, pos, _paintRadius, mat);
@@ -396,15 +325,13 @@ namespace FallingSand {
                 _wasPainting = painting || erasing;
             }
 
-            // --- Simulation (always runs) ---
+            // --- Simulation ---
 
             if (_pendingRecreate) {
                 _pendingRecreate = false;
                 RecreateSimulation();
             }
 
-            // Scale step count so total steps/sec stays ~constant at baseSteps * 60.
-            // Below 60 Hz the sim just slows down (capped at baseSteps).
             _effectiveSteps = Mathf.Clamp(
                 Mathf.RoundToInt(_baseSimSteps * 60f * Time.unscaledDeltaTime),
                 1, _baseSimSteps
@@ -418,9 +345,6 @@ namespace FallingSand {
             _compute.SetInt(ID_SIM_FRAME, _simFrame);
             _compute.SetInt(ID_GRAVITY, _gravity);
 
-            // Run PrepareFrame at a fixed ~60 Hz rate so gravity and drag use
-            // full-precision integer values — no truncation from coefficient
-            // scaling. Below 60 Hz it naturally slows down (one per frame).
             _prepareFrameAccum += Time.unscaledDeltaTime;
             if (_prepareFrameAccum >= 1f / 60f) {
                 _prepareFrameAccum -= 1f / 60f;
@@ -436,34 +360,24 @@ namespace FallingSand {
 
             _stepOffset = (_stepOffset + _effectiveSteps) % _baseSimSteps;
 
-            // Light pass at half resolution, amortized at high refresh rates.
-            // Skipped entirely when lighting is disabled.
-            if (_lightEnabled) {
-                var lightCadence = Mathf.Max(1, Mathf.RoundToInt(1f / (60f * Time.unscaledDeltaTime)));
-                if (_simFrame % lightCadence == 0) {
-                    ComputeLight();
-                    for (var b = 0; b < _lightBlurPasses; b++)
-                        BlurLight();
-                    ComputeEmission();
-                }
-            }
-
-            _compute.SetInt(ID_LIGHT_ENABLED, _lightEnabled ? 1 : 0);
+            // --- Lighting ---
 
             var cursorPos = Input.mousePosition;
             var cursorX = Mathf.FloorToInt(cursorPos.x * _visTexture.width / Screen.width);
             var cursorY = Mathf.FloorToInt(cursorPos.y * _visTexture.height / Screen.height);
-            Visualize(cursorX, cursorY);
+
+            _lighting.Render(
+                _simData, _visTexture, _lightTexture, _lightTextureTemp,
+                _simFrame, cursorX, cursorY, _paintRadius, _selectedIndex
+            );
 
             _simFrame++;
 
             Profiler.EndSample();
         }
 
-        /// <summary>
-        /// Stamp brush circles along a line from <paramref name="from"/> to
-        /// <paramref name="to"/>, spaced at half-radius intervals so they overlap.
-        /// </summary>
+        // --- Paint ---
+
         private void PaintLine(Vector2Int from, Vector2Int to, int r, int mat) {
             var dx = to.x - from.x;
             var dy = to.y - from.y;
@@ -484,8 +398,6 @@ namespace FallingSand {
             var groupsX = Mathf.CeilToInt((float)diameter / 8);
             var groupsY = Mathf.CeilToInt((float)diameter / 8);
 
-            // Sim dimensions are needed for the in-bounds check in the kernel.
-            // Paint runs before the sim dispatch sets them, so set them here too.
             _compute.SetInt(ID_SIM_WIDTH, _visTexture.width);
             _compute.SetInt(ID_SIM_HEIGHT, _visTexture.height);
             _compute.SetInt(ID_PAINT_X, x);
@@ -498,28 +410,70 @@ namespace FallingSand {
             _compute.Dispatch(KERNEL_PAINT, groupsX, groupsY, 1);
         }
 
+        // --- Upload ---
+
         private void UploadMaterials() {
             if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
 
-            var stride = Marshal.SizeOf<MaterialProperties>();
-            var count = _materials.Length + 1; // +1 for empty at index 0.
-            var data = new MaterialProperties[count];
+            var mats = MaterialTable.Materials;
+            var stride = Marshal.SizeOf<GpuMaterialDefinition>();
+            var count = mats.Count;
+            var data = new GpuMaterialDefinition[count];
 
-            data[0] = EmptyMaterial;
-            for (var i = 0; i < _materials.Length; i++) {
-                data[i + 1] = MaterialProperties.FromDefinition(_materials[i]);
+            for (var i = 0; i < count; i++) {
+                data[i] = GpuMaterialDefinition.FromDefinition(mats[i]);
             }
 
             _materialBuffer = new ComputeBuffer(count, stride);
             _materialBuffer.SetData(data);
 
-            // Bind to all kernels that read _Materials.
             _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_MATERIALS, _materialBuffer);
             _compute.SetBuffer(KERNEL_SIM, ID_MATERIALS, _materialBuffer);
-            _compute.SetBuffer(KERNEL_LIGHT, ID_MATERIALS, _materialBuffer);
-            _compute.SetBuffer(KERNEL_EMISSION, ID_MATERIALS, _materialBuffer);
-            _compute.SetBuffer(KERNEL_VIS, ID_MATERIALS, _materialBuffer);
+            _lighting.BindMaterials(_materialBuffer);
+
+            // Upload reaction table.
+            if (_reactionBuffer != null && _reactionBuffer.IsValid()) _reactionBuffer.Release();
+            
+            var reactions = MaterialTable.Reactions;
+            var reactionData = new GpuReactionRule[reactions.Count];
+            for (var i = 0; i < reactions.Count; i++) {
+                reactionData[i] = new GpuReactionRule {
+                    Source = (uint)reactions[i].Source,
+                    Trigger = (uint)reactions[i].Trigger,
+                    Result = (uint)reactions[i].Result,
+                    Probability = reactions[i].Probability,
+                };
+            }
+            
+            _reactionBuffer = new ComputeBuffer(Mathf.Max(1, reactions.Count), Marshal.SizeOf<GpuReactionRule>());
+            
+            if (reactions.Count > 0) _reactionBuffer.SetData(reactionData);
+            
+            _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_REACTIONS, _reactionBuffer);
+            _compute.SetInt(ID_REACTION_COUNT, reactions.Count);
+
+            // Upload decay table.
+            if (_decayBuffer != null && _decayBuffer.IsValid()) _decayBuffer.Release();
+            
+            var decay = MaterialTable.Decay;
+            var decayData = new GpuDecayRule[decay.Count];
+            for (var i = 0; i < decay.Count; i++) {
+                decayData[i] = new GpuDecayRule {
+                    Source = (uint)decay[i].Source,
+                    Result = (uint)decay[i].Result,
+                    Probability = decay[i].Probability,
+                };
+            }
+            
+            _decayBuffer = new ComputeBuffer(Mathf.Max(1, decay.Count), Marshal.SizeOf<GpuDecayRule>());
+            
+            if (decay.Count > 0) _decayBuffer.SetData(decayData);
+            
+            _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_DECAY, _decayBuffer);
+            _compute.SetInt(ID_DECAY_COUNT, decay.Count);
         }
+
+        // --- Sim ---
 
         private void PrepareFrame() {
             var groupsX = Mathf.CeilToInt((float)_visTexture.width / 8);
@@ -530,7 +484,6 @@ namespace FallingSand {
         }
 
         private void Simulate(int pass, int step) {
-            // Half-width dispatch for the red/black checkerboard pattern.
             var groupsX = Mathf.CeilToInt((float)_visTexture.width / 2f / 8);
             var groupsY = Mathf.CeilToInt((float)_visTexture.height / 2f / 8);
 
@@ -539,88 +492,6 @@ namespace FallingSand {
             _compute.SetBuffer(KERNEL_SIM, ID_SIM_DATA, _simData);
 
             _compute.Dispatch(KERNEL_SIM, groupsX, groupsY, 1);
-        }
-
-        private void ComputeLight() {
-            var groupsX = Mathf.CeilToInt((float)_lightTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)_lightTexture.height / 8);
-
-            // Copy previous frame's blurred light into temp so the bounce
-            // march can read it safely while we write the new light buffer.
-            Graphics.CopyTexture(_lightTexture, _lightTextureTemp);
-
-            // Convert angle to integer DDA direction.
-            // 0° = right, 90° = up. Scale by 16 for slope precision, flip Y (sim Y=0 is bottom).
-            var rad = _lightAngle * Mathf.Deg2Rad;
-            _compute.SetInt(ID_LIGHT_DIR_X, Mathf.RoundToInt(Mathf.Cos(rad) * 16));
-            _compute.SetInt(ID_LIGHT_DIR_Y, Mathf.RoundToInt(Mathf.Sin(rad) * 16));
-
-            var lc = _lightColor.linear;
-            _compute.SetVector(ID_LIGHT_COLOR, new Vector4(lc.r * _lightIntensity, lc.g * _lightIntensity, lc.b * _lightIntensity, 1f));
-            var ac = _ambientColor.linear;
-            _compute.SetVector(ID_AMBIENT_COLOR, new Vector4(ac.r, ac.g, ac.b, 1f));
-            _compute.SetInt(ID_LIGHT_MAX_STEPS, _lightMaxSteps);
-            _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
-
-            // Bounce direction: opposite of the main light, for indirect fill.
-            _compute.SetInt(ID_BOUNCE_DIR_X, -Mathf.RoundToInt(Mathf.Cos(rad) * 16));
-            _compute.SetInt(ID_BOUNCE_DIR_Y, -Mathf.RoundToInt(Mathf.Sin(rad) * 16));
-            _compute.SetFloat(ID_BOUNCE_INTENSITY, _bounceIntensity);
-            _compute.SetInt(ID_BOUNCE_MAX_STEPS, _bounceMaxSteps);
-
-            _compute.SetBuffer(KERNEL_LIGHT, ID_SIM_DATA, _simData);
-            _compute.SetTexture(KERNEL_LIGHT, ID_LIGHT_TEXTURE, _lightTexture);
-            _compute.SetTexture(KERNEL_LIGHT, ID_LIGHT_TEXTURE_READ, _lightTextureTemp);
-
-            _compute.Dispatch(KERNEL_LIGHT, groupsX, groupsY, 1);
-        }
-
-        private void ComputeEmission() {
-            var groupsX = Mathf.CeilToInt((float)_emissionTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)_emissionTexture.height / 8);
-
-            _compute.SetInt(ID_EMISSION_MAX_STEPS, _emissionMaxSteps);
-            _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
-
-            _compute.SetBuffer(KERNEL_EMISSION, ID_SIM_DATA, _simData);
-            _compute.SetTexture(KERNEL_EMISSION, ID_EMISSION_TEXTURE, _emissionTexture);
-
-            _compute.Dispatch(KERNEL_EMISSION, groupsX, groupsY, 1);
-        }
-
-        private void BlurLight() {
-            var groupsX = Mathf.CeilToInt((float)_lightTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)_lightTexture.height / 8);
-
-            _compute.SetInt(ID_LIGHT_WIDTH, _lightTexture.width);
-            _compute.SetInt(ID_LIGHT_HEIGHT, _lightTexture.height);
-
-            // Horizontal: _LightTexture → _LightTextureTemp
-            _compute.SetTexture(KERNEL_BLUR_H, ID_LIGHT_TEXTURE, _lightTexture);
-            _compute.SetTexture(KERNEL_BLUR_H, ID_LIGHT_TEXTURE_TEMP, _lightTextureTemp);
-            _compute.Dispatch(KERNEL_BLUR_H, groupsX, groupsY, 1);
-
-            // Vertical: _LightTextureTemp → _LightTexture
-            _compute.SetTexture(KERNEL_BLUR_V, ID_LIGHT_TEXTURE_TEMP, _lightTextureTemp);
-            _compute.SetTexture(KERNEL_BLUR_V, ID_LIGHT_TEXTURE, _lightTexture);
-            _compute.Dispatch(KERNEL_BLUR_V, groupsX, groupsY, 1);
-        }
-
-        private void Visualize(int cursorX, int cursorY) {
-            var groupsX = Mathf.CeilToInt((float)_visTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
-
-            _compute.SetInt(ID_CURSOR_X, cursorX);
-            _compute.SetInt(ID_CURSOR_Y, cursorY);
-            _compute.SetInt(ID_CURSOR_R, _paintRadius);
-            _compute.SetInt(ID_CURSOR_MAT, _selectedIndex + 1);
-
-            _compute.SetBuffer(KERNEL_VIS, ID_SIM_DATA, _simData);
-            _compute.SetTexture(KERNEL_VIS, ID_VIS_TEXTURE, _visTexture);
-            _compute.SetTexture(KERNEL_VIS, ID_LIGHT_TEXTURE_READ, _lightTexture);
-            _compute.SetTexture(KERNEL_VIS, ID_EMISSION_TEXTURE_READ, _emissionTexture);
-
-            _compute.Dispatch(KERNEL_VIS, groupsX, groupsY, 1);
         }
     }
 }

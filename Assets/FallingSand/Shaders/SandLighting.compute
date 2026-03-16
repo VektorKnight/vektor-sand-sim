@@ -1,0 +1,161 @@
+#include "SandLighting.hlsl"
+
+// ============================================================================
+// Post-process lighting and visualization kernels.
+// Operates on the simulation data produced by SandSimulation.compute.
+//
+// Execution order (driven by SandSimulation.cs):
+//   1. Light     – DDA ray-march + bounce at half resolution
+//   2. Emission  – radial emission gather at half resolution
+//   3. BlurH/V   – separable Gaussian blur on the light buffer
+//   4. Visualize – composite material colors × light to output texture
+// ============================================================================
+
+#pragma kernel Light
+#pragma kernel Emission
+#pragma kernel BlurH
+#pragma kernel BlurV
+#pragma kernel Visualize
+
+// ============================================================================
+// Runs the DDA ray-march at the specified resolution.
+// Currently just marches towards the primary light.
+// ============================================================================
+[numthreads(8,8,1)]
+void Light(uint3 id : SV_DispatchThreadID) {
+    const int2 sim_pos = int2(id.xy) * _LightDownscale;
+
+    if (sim_pos.x >= _SimWidth || sim_pos.y >= _SimHeight) {
+        return;
+    }
+
+    const int2 light_dir = int2(_LightDirX, _LightDirY);
+    const float3 light_color = _LightColor.rgb;
+    const float3 ambient_color = _AmbientColor.rgb;
+
+    const float3 result = march_dda(sim_pos, light_dir, light_color, ambient_color, _LightMaxSteps);
+    _LightTexture[id.xy] = float4(result, 1);
+}
+
+// ============================================================================
+// Radial emission march in 8 directions collecting emission from emissive cells.
+// Attenuated by extinction along the path and 1/r distance falloff.
+// ============================================================================
+[numthreads(8,8,1)]
+void Emission(uint3 id : SV_DispatchThreadID) {
+    const int2 sim_pos = int2(id.xy) * _LightDownscale;
+    
+    if (!in_bounds(sim_pos)) {
+        return;
+    }
+    
+    static const float dir_len[8] = {
+        1.0, 1.0, 1.0, 1.0,
+        1.41421356, 1.41421356, 1.41421356, 1.41421356
+    };
+
+    float3 total = 0;
+
+    [unroll]
+    for (int d = 0; d < 8; d++) {
+        float3 transmittance = 1;
+        float dist = 0;
+        int2 pos = sim_pos;
+
+        [loop]
+        for (int i = 0; i < _EmissionMaxSteps; i++) {
+            pos += NEIGHBORS[d];
+            dist += dir_len[d];
+
+            if (!in_bounds(pos)) break;
+
+            const MaterialProperties mat_pos = get_mat_props(get_cell_data(pos));
+
+            total += mat_pos.emission.rgb * transmittance / (1.0 + dist);
+
+            transmittance *= exp(-mat_pos.extinction.rgb);
+
+            if (transmittance.x + transmittance.y + transmittance.z < 0.01) break;
+        }
+    }
+
+    _LightTexture[id.xy] += float4(total, 0);
+}
+
+// ============================================================================
+// Separable 5-tap Gaussian blur on the light buffer.
+// ============================================================================
+
+[numthreads(8,8,1)]
+void BlurH(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_LightWidth || id.y >= (uint)_LightHeight) return;
+
+    float4 sum = 0;
+    for (int k = -2; k <= 2; k++) {
+        int sx = clamp((int)id.x + k, 0, _LightWidth - 1);
+        sum += _LightTexture[int2(sx, id.y)] * _BlurWeights[k + 2];
+    }
+    _LightTextureTemp[id.xy] = sum;
+}
+
+[numthreads(8,8,1)]
+void BlurV(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_LightWidth || id.y >= (uint)_LightHeight) return;
+
+    float4 sum = 0;
+    for (int k = -2; k <= 2; k++) {
+        int sy = clamp((int)id.y + k, 0, _LightHeight - 1);
+        sum += _LightTextureTemp[int2(id.x, sy)] * _BlurWeights[k + 2];
+    }
+    _LightTexture[id.xy] = sum;
+}
+
+// ============================================================================
+// Writes material colors to the output texture, sampling the light
+// Draws a cursor ring overlay.
+// ============================================================================
+[numthreads(8,8,1)]
+void Visualize(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= (uint)_SimWidth || id.y >= (uint)_SimHeight) {
+        return;
+    }
+
+    const uint cell = get_cell_data(id.xy);
+
+    // Draw cursor ring over everything, including empty cells.
+    if (_CursorR > 0) {
+        const int dx = (int)id.x - _CursorX;
+        const int dy = (int)id.y - _CursorY;
+        const int d2 = dx * dx + dy * dy;
+        const int r_inner = _CursorR - 1;
+
+        if (d2 <= _CursorR * _CursorR && d2 >= r_inner * r_inner) {
+            const float4 mat_color = _Materials[_CursorMat].color;
+            _VisTexture[id.xy] = float4(saturate(mat_color.rgb + 0.3), 1);
+            return;
+        }
+    }
+
+    // Empty cells are clear.
+    if (is_empty(cell)) {
+        _VisTexture[id.xy] = float4(0, 0, 0, 0);
+        return;
+    }
+
+    const MaterialProperties mat = get_mat_props(cell);
+
+    // Apply per-particle color variation.
+    const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
+    float3 base_color = float3(saturate(mat.color.rgb + offset));
+
+    // Sample combined light + emission buffer..
+    if (_LightEnabled) {
+        const float2 uv = (float2(id.xy) + 0.5) / float2(_SimWidth, _SimHeight);
+        base_color *= _LightTextureRead.SampleLevel(sampler_LightTextureRead, uv, 0).rgb;
+    }
+
+    // Self-illumination added after lighting so emissive materials glow.
+    base_color += mat.emission.rgb;
+
+    _VisTexture[id.xy] = float4(base_color, 1);
+}

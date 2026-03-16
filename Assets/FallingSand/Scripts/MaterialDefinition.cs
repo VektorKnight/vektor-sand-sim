@@ -3,8 +3,7 @@ using UnityEngine;
 
 namespace FallingSand.Scripts {
     /// <summary>
-    /// Inspector-friendly material definition.
-    /// See MaterialProperties.cs for what actually gets to the GPU.
+    /// Material definition. Converted to MaterialProperties for the GPU.
     /// </summary>
     [Serializable]
     public class MaterialDefinition {
@@ -47,8 +46,7 @@ namespace FallingSand.Scripts {
 
         /// <summary>
         /// How opaque the material is to light. 0 = fully transparent, higher = denser.
-        /// Per-channel extinction is derived automatically from the material color
-        /// so that colored materials cast physically plausible tinted shadows.
+        /// Per-channel extinction is derived from color on the CPU side.
         /// </summary>
         [Range(0f, 10f)]
         public float Opacity = 1f;
@@ -65,6 +63,21 @@ namespace FallingSand.Scripts {
         [Range(0f, 10f)]
         public float EmissionIntensity = 0f;
 
-        public Color Color = UnityEngine.Color.white;
+        public Color Color = Color.white;
+
+        public static MaterialDefinition Empty() {
+            return new MaterialDefinition {
+                Name = "Empty",
+                Fluidity = 0,
+                Density = 0,
+                Weight = 0,
+                Drag = 0,
+                Variation = 0f,
+                Opacity = 0f,
+                EmissionColor = Color.black,
+                EmissionIntensity = 0f,
+                Color = Color.clear,
+            };
+        }
     }
 }

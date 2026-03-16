@@ -5,33 +5,21 @@
 // scheme with compare-and-swap (CAS) for thread-safe cell movement.
 //
 // Frame execution order (driven by SandSimulation.cs):
-//   1. Paint     – write user input into the grid
+//   1. Paint        – write user input into the grid
 //   2. PrepareFrame – clear flags, reset stalled velocity, apply gravity and drag
-//   3. Simulate    – _SimSteps iterations × 4 passes (red, green, blue, yellow) of movement
-//   4. Light       – DDA ray-march at half resolution into the light buffer
-//   5. Visualize   – write material colors × sampled light to the output texture
+//   3. Simulate     – _SimSteps iterations × 4 passes of movement
 //
-// Movement and other timing-based behaviors use Bresenham-style gating to get
-// nice behavior over the high step rate.
+// Post-process lighting and visualization live in SandLighting.compute.
 //
 // The four-color tiling (2x2 pattern, 4 passes) ensures no two cells within
 // Chebyshev distance 1 are evaluated in the same pass, eliminating all
 // neighbor-to-neighbor data races including diagonals. Cardinal neighbor contention
-// is cleanly solved with a single CAS.
-//
-// A nine-color pattern removes all neighbor conflicts and atomics on paper but
-// then requires nine passes instead of four. Given the atomics don't seem to be
-// major bottleneck, I haven't bothered testing other patterns yet.
+// is handled by a single CAS.
 // ============================================================================
 
 #pragma kernel Paint
 #pragma kernel PrepareFrame
 #pragma kernel Simulate
-#pragma kernel Light
-#pragma kernel Emission
-#pragma kernel BlurH
-#pragma kernel BlurV
-#pragma kernel Visualize
 
 // Paint params.
 int _PaintX;
@@ -40,48 +28,24 @@ int _PaintR;
 uint _PaintType;
 uint _PaintReplace; // 1 = overwrite existing materials, 0 = only fill empty cells.
 
-// Cursor params for visualization.
-int _CursorX;
-int _CursorY;
-int _CursorR;
-uint _CursorMat;
-
-// Lighting params for DDA ray-marching.
-int _LightDirX;
-int _LightDirY;
-float4 _LightColor;
-float4 _AmbientColor;
-int _LightMaxSteps;
-int _LightDownscale;
-int _LightEnabled;
-int _EmissionMaxSteps;
-int _BounceDirX;
-int _BounceDirY;
-float _BounceIntensity;
-int _BounceMaxSteps;
-
 // Simulation params.
-int _SimWidth;  // X dimension of the sim.
-int _SimHeight; // Y dimension of the sim.
-int _SimSteps;  // Total number of steps per-frame.
-int _SimStep;   // Current step within a frame.
-int _SimFrame;  // Current simulation frame.
-int _SimPass;   // Four-color pass index (0-3) on this step.
-int _Gravity;   // Global downward acceleration. Per-material weight scales this.
+int _SimWidth;
+int _SimHeight;
+int _SimSteps;
+int _SimStep;
+int _SimFrame;
+int _SimPass;
+int _Gravity;
 
 // Simulation data buffers.
 StructuredBuffer<MaterialProperties> _Materials;
 RWStructuredBuffer<uint> _SimData;
-RWTexture2D<float4> _LightTexture;      // Half-res, written by Light kernel.
-RWTexture2D<float4> _LightTextureTemp;  // Scratch buffer for separable blur.
-RWTexture2D<float4> _EmissionTexture;   // Half-res, written by Emission kernel.
-RWTexture2D<float4> _VisTexture;
 
-// Sampled with bilinear filtering in Visualize.
-Texture2D<float4> _LightTextureRead;
-SamplerState sampler_LightTextureRead;
-Texture2D<float4> _EmissionTextureRead;
-SamplerState sampler_EmissionTextureRead;
+// Interaction tables.
+StructuredBuffer<ReactionRule> _Reactions;
+StructuredBuffer<DecayRule> _Decay;
+int _ReactionCount;
+int _DecayCount;
 
 // Convert a 2D index to 1D buffer.
 int to_flat(int2 i) {
@@ -100,19 +64,17 @@ MaterialProperties get_mat_props(uint cell) {
 }
 
 // Fetch data for a cell at a given position.
-// Expected to be within bounds.
 uint get_cell_data(int2 id) {
     return _SimData[to_flat(id)];
 }
 
 // Set data for a cell at a given position.
-// Expected to be within bounds.
 void set_cell_data(int2 id, uint data) {
     _SimData[to_flat(id)] = data;
 }
 
 // Bresenham-style gating.
-// Distributes move attempts evenly across _SimSteps.
+// Distributes interval-based actions evenly across _SimSteps.
 // Returns true on steps where the scaled position crosses an integer boundary.
 bool bresenham(int vel) {
     float steps = (float)_SimSteps;
@@ -123,29 +85,31 @@ bool bresenham(int vel) {
 // Attempts to execute a desired move while handling neighbor contention between threads with an atomic CAS.
 bool try_move(int2 from, int2 to, uint cell) {
     // Delete particles that leave the grid.
-    // TODO: Make this a toggle routed to the user?
+    // TODO: Maybe this should be a toggle.
     if (!in_bounds(to)) {
         set_cell_data(from, ID_EMPTY);
         return true;
     }
-    
+
     const uint cell_to = get_cell_data(to);
 
+    // Density swapping for fluids.
     if (!is_empty(cell_to)) {
-        // Density swap allowed in all directions. At least one must be a fluid.
-        // Four-color tiling guarantees all 8 neighbors are on different passes,
-        // so no same-pass thread can write to our source position.
+        // Density swap allowed in all directions if at least one is a fluid.
+        // Four-color tiling guarantees all 8 neighbors are on different passes.
+        // Guards against other threads writing back to our cell (fun race-conditions).
         const MaterialProperties mat_from = get_mat_props(cell);
         const MaterialProperties mat_to   = get_mat_props(cell_to);
-
+        
         if (mat_from.fluidity == 0 && mat_to.fluidity == 0) return false;
+        if (mat_to.weight == 0 && mat_to.fluidity == 0) return false;
         if (mat_from.density <= mat_to.density) return false;
     }
 
     const uint flagged_cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
-    const uint flagged_to  = clear_flag(cell_to, MOVED_LAST_STEP);
+    const uint flagged_to = clear_flag(cell_to, MOVED_LAST_STEP);
 
-    // Two same-pass cells can target the cardinal neighbor so a CAS is required.
+    // Two same-pass cells can target the same cardinal neighbor, so a CAS is required.
     // The source write is non-atomic as four-color tiling guarantees no same-pass thread is adjacent to us.
     int original;
     InterlockedCompareExchange(_SimData[to_flat(to)], cell_to, flagged_cell, original);
@@ -157,35 +121,28 @@ bool try_move(int2 from, int2 to, uint cell) {
     return false;
 }
 
-// Determine if a cell should move this step and try to execute the move.
+// Determine if a cell should move this step and tries to execute the move.
 void evaluate_move(uint2 id) {
     const uint cell = get_cell_data(id);
     const MaterialProperties mat = get_mat_props(cell);
-    
-    // Early out on empty cells.
+
     if (is_empty(cell)) {
         return;
     }
 
     // If the cell was moved in a previous pass, clear flag and skip.
-    // Prevents the four-color passes from moving a cell repeatedly.
     if (has_flag(cell, MOVED_LAST_STEP)) {
         set_cell_data(id, clear_flag(cell, MOVED_LAST_STEP));
         return;
     }
-    
-    // Fetch velocities and determine if we should move on each axis.
-    // Successful moves early out with the expectation that other moves will occur in subsequent steps.
-    // Everything eventually works out over the total steps per-frame thanks to the Bresenham gating.
+
     const int x_vel = get_x_vel(cell);
     const int y_vel = get_y_vel(cell);
-    
+
     const bool move_x = bresenham(x_vel);
     const bool move_y = bresenham(y_vel);
-    
+
     // Try to execute a vertical move.
-    // Occasionally prefer diagonal over straight-down to break up column patterns during freefall.
-    // Works regardless of drag since it acts on movement direction, not velocity.
     if (move_y) {
         const int dir = sign(y_vel);
         const uint h = hash(id, _SimFrame);
@@ -199,26 +156,23 @@ void evaluate_move(uint2 id) {
             if (try_move(id, id + int2(0, dir), cell)) return;
             if (try_move(id, id + int2(side, dir), cell)) return;
         }
-        
+
         if (try_move(id, id + int2(-side, dir), cell)) return;
     }
-    
+
     // Try to execute a lateral move.
     if (move_x) {
         if (try_move(id, id + int2(sign(x_vel), 0), cell)) return;
     }
-    
+
     // Fluid lateral spread via Bresenham gating on fluidity.
-    // Higher fluidity means more spread attempts per frame.
-    // Only when resting on a surface (or ceiling for gases) to prevent in-flight lateral spray.
+    // TODO: Maybe try probability like reactions/decay instead?
     if (bresenham(mat.fluidity)) {
         const int grav_dir = mat.weight >= 0 ? -1 : 1;
         const int2 ahead = id + int2(0, grav_dir);
         const bool supported = !in_bounds(ahead) ||
                                !is_empty(get_cell_data(ahead));
 
-        // Only spread when truly supported.
-        // The cell below must be denser, not just non-empty.
         if (supported && get_mat_props(get_cell_data(ahead)).density >= mat.density) {
             const int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
             try_move(id, id + int2(side, 0), cell);
@@ -226,18 +180,22 @@ void evaluate_move(uint2 id) {
     }
 }
 
+// Creates a fresh cell with the given material ID and a position-based color variant.
+uint make_cell(uint mat_id, int2 pos) {
+    uint c = set_mat_id(0u, mat_id);
+    return set_variant(c, hash(pos, 0) & 0x3);
+}
+
 // ============================================================================
 // Handles painting of new particles into the simulation.
 // ============================================================================
 [numthreads(8,8,1)]
 void Paint(uint3 id : SV_DispatchThreadID) {
-    // Determine paint cell from thread ID.
     const int2 cell = int2(
-        (int)id.x + (_PaintX - _PaintR), 
+        (int)id.x + (_PaintX - _PaintR),
         (int)id.y + (_PaintY - _PaintR)
     );
-    
-    // Skip if out of bounds or not in paint circle.
+
     const int dx = cell.x - _PaintX;
     const int dy = cell.y - _PaintY;
     const int d2 = dx * dx + dy * dy;
@@ -248,22 +206,24 @@ void Paint(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
-    // Only set empty cells if we're not in replace mode.
-    // Erasing (painting empty) always replaces.
     if (!_PaintReplace && _PaintType != ID_EMPTY) {
         if (!is_empty(get_cell_data(cell))) {
             return;
         }
     }
 
-    // Set a random color variant per particle based on its position.
-    const uint variant = hash(cell, 0) & 0x3;
-    set_cell_data(cell, set_variant(_PaintType, variant));
+    set_cell_data(cell, make_cell(_PaintType, cell));
+}
+
+// Determines if a reaction/decay should occur based on the probability.
+// Salt differentiates rolls for different rules on the same cell/frame.
+bool should_react(int2 id, float probability, uint salt) {
+    return (hash(id, _SimFrame * 17u + salt) % 256) < (probability * 255);
 }
 
 // ============================================================================
-// Runs once per frame before simulation steps. Clears per-frame movement flags,
-// resets velocity on stalled particles, and applies gravity and drag.
+// Runs once per frame before simulation steps.
+// Clears flags, applies gravity/drag, then runs reactions and decay.
 // ============================================================================
 [numthreads(8,8,1)]
 void PrepareFrame(uint3 id : SV_DispatchThreadID) {
@@ -271,7 +231,6 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
-    // Fetch cell data and material propertoes.
     uint cell = get_cell_data(id.xy);
     const MaterialProperties mat = get_mat_props(cell);
 
@@ -279,14 +238,9 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
-    // A particle that never moved last frame is considered stalled.
     const bool moved = has_flag(cell, MOVED_LAST_FRAME);
-
-    // Clear both flags for the new frame.
     cell = clear_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
 
-    // Stalled particles get their velocity zeroed out so they don't
-    // accumulate speed while stuck against a surface.
     if (!moved) {
         cell = set_x_vel(cell, 0);
         cell = set_y_vel(cell, 0);
@@ -295,30 +249,75 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     int x_vel = get_x_vel(cell);
     int y_vel = get_y_vel(cell);
 
-    // Apply gravity scaled by per-material weight.
-    // weight=256: normal, weight=0: weightless, negative: buoyant.
     y_vel -= _Gravity * mat.weight / 256;
 
-    // Apply drag on both axes.
     x_vel = apply_drag(x_vel, (int)mat.drag);
     y_vel = apply_drag(y_vel, (int)mat.drag);
     y_vel = clamp(y_vel, -127, 127);
 
     cell = set_x_vel(cell, x_vel);
-    set_cell_data(id.xy, set_y_vel(cell, y_vel));
+    cell = set_y_vel(cell, y_vel);
+    
+    // Run material interactions after housekeeping and velocity.
+    // Interactions simply change the material based on the neighbors.
+    // Velocity and such will work themselves out over the sim steps based on the new material's properties.
+    const uint mat_id = get_mat_id(cell);
+    bool reacted = false;
+    for (uint i = 0; i < _ReactionCount; i++) {
+        if (reacted) {
+            break;
+        }
+        
+        // Skip if the reaction rule does not involve us.
+        const ReactionRule reaction = _Reactions[i];
+        if (reaction.source != mat_id) {
+            continue;
+        }
+        
+        // Check if any neighbors satisfy the reaction rule.
+        [unroll]
+        for (uint n = 0; n < 8; n++) {
+            // Compute neighbor ID, skip if out of bounds.
+            const int2 n_id = id.xy + NEIGHBORS[n];
+            if (!in_bounds(n_id)) {
+                continue;
+            }
+            
+            // Get the material ID of the neighbors.
+            // If the neighbor is the reaction trigger, try to run the reaction.
+            const uint n_mat_id = get_mat_id(get_cell_data(n_id));
+            if (n_mat_id == reaction.trigger && should_react(id.xy, reaction.probability, i * 8 + n)) {
+                cell = make_cell(reaction.result, id.xy);
+                reacted = true;
+                break;
+            }
+        }
+    }
+    
+    // Run material decays.
+    for (uint i = 0; i < _DecayCount; i++) {
+        // Skip if the decay rule does not involve us.
+        const DecayRule decay = _Decay[i];
+        if (decay.source != mat_id) {
+            continue;
+        }
+        
+        // Try to run the decay rule if it matches.
+        if (should_react(id.xy, decay.probability, 256u + i)) {
+            cell = make_cell(decay.result, id.xy);
+        }
+        
+    }
+    
+    
+    set_cell_data(id.xy, cell);
 }
 
 // ============================================================================
 // Runs one pass of the four-color tiling movement step.
-// Maps each thread to one cell in the active quarter of the grid and evaluates
-// its movement. The thread-to-cell mapping flips horizontally each step to
-// cancel CAS serialization bias.
 // ============================================================================
 [numthreads(8,8,1)]
 void Simulate(uint3 id : SV_DispatchThreadID) {
-    // Four-color tiling: each pass evaluates one quarter of the grid.
-    // A(0,0) B(1,0) C(0,1) D(1,1)
-    // All 8 neighbors of any cell are on different passes, so displacement in any direction is race-free.
     const int half_w = (_SimWidth + 1) / 2;
     const int mx = ((_SimStep + _SimFrame) & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
     const int2 cell_id = int2(mx * 2 + (_SimPass & 1), (int)id.y * 2 + ((_SimPass >> 1) & 1));
@@ -329,268 +328,3 @@ void Simulate(uint3 id : SV_DispatchThreadID) {
 
     evaluate_move(cell_id);
 }
-
-float3 march_dda(int2 start, int2 light_dir, float3 light_color, float3 ambient_color, int max_steps) {
-    float3 light = light_color;
-    int2 pos = start;
-    const int2 s = sign(light_dir);
-    const int2 a = abs(light_dir);
-
-    // Determine major/minor axes without dynamic vector indexing.
-    const bool x_major = a.x >= a.y;
-    const int major_len = x_major ? a.x : a.y;
-    const int minor_len = x_major ? a.y : a.x;
-
-    int accum = 0;
-
-    [loop]
-    for (int i = 0; i < max_steps; i++) {
-        // Step along major axis.
-        if (x_major) pos.x += s.x;
-        else         pos.y += s.y;
-
-        // Accumulate minor axis steps.
-        accum += minor_len;
-        if (accum >= major_len) {
-            if (x_major) pos.y += s.y;
-            else         pos.x += s.x;
-            accum -= major_len;
-        }
-
-        if (!in_bounds(pos)) {
-            break;
-        };
-        const MaterialProperties mat_pos = get_mat_props(get_cell_data(pos));
-
-        light *= exp(-mat_pos.extinction.rgb);
-
-        if (light.x + light.y + light.z < 0.01) {
-            break;
-        }
-    }
-
-    return max(light, ambient_color);
-}
-
-// ============================================================================
-// Runs the DDA ray-march at the specified resolution, then adds a bounce
-// pass that samples the directional light buffer along the bounce direction.
-// ============================================================================
-[numthreads(8,8,1)]
-void Light(uint3 id : SV_DispatchThreadID) {
-    // Each light texel maps to an NxN block in the sim grid.
-    const int2 sim_pos = int2(id.xy) * _LightDownscale;
-
-    if (sim_pos.x >= _SimWidth || sim_pos.y >= _SimHeight) {
-        return;
-    }
-
-    const int2 light_dir = int2(_LightDirX, _LightDirY);
-    const float3 light_color = _LightColor.rgb;
-    const float3 ambient_color = _AmbientColor.rgb;
-
-    float3 result = march_dda(sim_pos, light_dir, light_color, ambient_color, _LightMaxSteps);
-
-    // Bounce pass: march in the bounce direction, sampling the directional
-    // light at each occupied cell hit. The first surface found reflects its
-    // received light back into the scene, attenuated by extinction along
-    // the bounce path and the material's color (acts as reflectance).
-    if (_BounceIntensity > 0 && _BounceMaxSteps > 0) {
-        const int2 bounce_dir = int2(_BounceDirX, _BounceDirY);
-        const int2 bs = sign(bounce_dir);
-        const int2 ba = abs(bounce_dir);
-        const bool bx_major = ba.x >= ba.y;
-        const int b_major = bx_major ? ba.x : ba.y;
-        const int b_minor = bx_major ? ba.y : ba.x;
-
-        float3 bounce = 0;
-        float3 transmittance = 1;
-        int baccum = 0;
-        int2 bpos = sim_pos;
-
-        // Track whether we've crossed empty space. Only bounce off the
-        // first surface AFTER a gap to avoid self-illumination inside
-        // the same body of material.
-        bool passed_gap = is_empty(get_cell_data(sim_pos));
-
-        [loop]
-        for (int i = 0; i < _BounceMaxSteps; i++) {
-            if (bx_major) bpos.x += bs.x;
-            else          bpos.y += bs.y;
-
-            baccum += b_minor;
-            if (baccum >= b_major) {
-                if (bx_major) bpos.y += bs.y;
-                else          bpos.x += bs.x;
-                baccum -= b_major;
-            }
-
-            if (!in_bounds(bpos)) break;
-
-            const uint bcell = get_cell_data(bpos);
-            const MaterialProperties mat_b = get_mat_props(bcell);
-            const bool occupied = !is_empty(bcell);
-
-            if (!occupied) {
-                passed_gap = true;
-            } else if (passed_gap) {
-                // First surface after a gap — this is the bounce source.
-                const float2 buv = (float2(bpos) + 0.5) / float2(_SimWidth, _SimHeight);
-                float3 surface_light = _LightTextureRead.SampleLevel(sampler_LightTextureRead, buv, 0).rgb;
-                bounce = surface_light * mat_b.color.rgb * transmittance;
-                break;
-            }
-
-            transmittance *= exp(-mat_b.extinction.rgb);
-
-            if (transmittance.x + transmittance.y + transmittance.z < 0.01) break;
-        }
-
-        result += bounce * _BounceIntensity;
-    }
-
-    _LightTexture[id.xy] = float4(result, 1);
-}
-
-// ============================================================================
-// Radial emission march. For each half-res texel, marches 8 directions
-// (cardinal + diagonal) collecting emission from emissive cells, attenuated
-// by extinction along the path and inverse-square distance falloff.
-// ============================================================================
-[numthreads(8,8,1)]
-void Emission(uint3 id : SV_DispatchThreadID) {
-    const int2 sim_pos = int2(id.xy) * _LightDownscale;
-
-    if (sim_pos.x >= _SimWidth || sim_pos.y >= _SimHeight) {
-        return;
-    }
-
-    // 8 directions: cardinal + diagonal. Diagonal directions are scaled
-    // by 1/sqrt(2) for correct distance weighting.
-    static const int2 dirs[8] = {
-        int2( 1,  0), int2(-1,  0), int2( 0,  1), int2( 0, -1),
-        int2( 1,  1), int2( 1, -1), int2(-1,  1), int2(-1, -1)
-    };
-    static const float dir_len[8] = {
-        1.0, 1.0, 1.0, 1.0,
-        1.41421356, 1.41421356, 1.41421356, 1.41421356
-    };
-
-    float3 total = 0;
-
-    [unroll]
-    for (int d = 0; d < 8; d++) {
-        float3 transmittance = 1;
-        float dist = 0;
-        int2 pos = sim_pos;
-
-        [loop]
-        for (int i = 0; i < _EmissionMaxSteps; i++) {
-            pos += dirs[d];
-            dist += dir_len[d];
-
-            if (!in_bounds(pos)) break;
-
-            const MaterialProperties mat_pos = get_mat_props(get_cell_data(pos));
-
-            // Accumulate emission before this cell absorbs it.
-            // Inverse-square falloff with a +1 bias to avoid division by zero.
-            // 1/r falloff (correct for 2D) with +1 bias to avoid div-by-zero.
-            total += mat_pos.emission.rgb * transmittance / (1.0 + dist);
-
-            transmittance *= exp(-mat_pos.extinction.rgb);
-
-            if (transmittance.x + transmittance.y + transmittance.z < 0.01) break;
-        }
-    }
-
-    _EmissionTexture[id.xy] = float4(total, 1);
-}
-
-// ============================================================================
-// Separable 5-tap Gaussian blur on the half-res light buffer.
-// Two passes: BlurH writes _LightTexture → _LightTextureTemp,
-//             BlurV writes _LightTextureTemp → _LightTexture.
-// ============================================================================
-
-// 5-tap Gaussian weights (sigma ~1.4): [0.06136, 0.24477, 0.38774, 0.24477, 0.06136]
-static const float _BlurWeights[5] = { 0.06136, 0.24477, 0.38774, 0.24477, 0.06136 };
-
-int _LightWidth;
-int _LightHeight;
-
-[numthreads(8,8,1)]
-void BlurH(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= (uint)_LightWidth || id.y >= (uint)_LightHeight) return;
-
-    float4 sum = 0;
-    for (int k = -2; k <= 2; k++) {
-        int sx = clamp((int)id.x + k, 0, _LightWidth - 1);
-        sum += _LightTexture[int2(sx, id.y)] * _BlurWeights[k + 2];
-    }
-    _LightTextureTemp[id.xy] = sum;
-}
-
-[numthreads(8,8,1)]
-void BlurV(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= (uint)_LightWidth || id.y >= (uint)_LightHeight) return;
-
-    float4 sum = 0;
-    for (int k = -2; k <= 2; k++) {
-        int sy = clamp((int)id.y + k, 0, _LightHeight - 1);
-        sum += _LightTextureTemp[int2(id.x, sy)] * _BlurWeights[k + 2];
-    }
-    _LightTexture[id.xy] = sum;
-}
-
-// ============================================================================
-// Writes material colors to the output texture, sampling the half-res light
-// buffer with bilinear filtering. Draws a cursor ring overlay.
-// ============================================================================
-[numthreads(8,8,1)]
-void Visualize(uint3 id : SV_DispatchThreadID) {
-    if (id.x >= (uint)_SimWidth || id.y >= (uint)_SimHeight) {
-        return;
-    }
-
-    const uint cell = get_cell_data(id.xy);
-
-    // Draw cursor ring over everything, including empty cells.
-    if (_CursorR > 0) {
-        const int dx = (int)id.x - _CursorX;
-        const int dy = (int)id.y - _CursorY;
-        const int d2 = dx * dx + dy * dy;
-        const int r_inner = _CursorR - 1;
-
-        if (d2 <= _CursorR * _CursorR && d2 >= r_inner * r_inner) {
-            const float4 mat_color = _Materials[_CursorMat].color;
-            _VisTexture[id.xy] = float4(saturate(mat_color.rgb + 0.3), 1);
-            return;
-        }
-    }
-
-    // Empty cells are clear.
-    if (is_empty(cell)) {
-        _VisTexture[id.xy] = float4(0, 0, 0, 0);
-        return;
-    }
-
-    const MaterialProperties mat = get_mat_props(cell);
-
-    // Apply per-particle color variation.
-    const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
-    float3 base_color = float3(saturate(mat.color.rgb + offset));
-
-    // Sample half-res light and emission buffers with bilinear filtering.
-    if (_LightEnabled) {
-        const float2 uv = (float2(id.xy) + 0.5) / float2(_SimWidth, _SimHeight);
-        base_color *= _LightTextureRead.SampleLevel(sampler_LightTextureRead, uv, 0).rgb;
-        base_color += _EmissionTextureRead.SampleLevel(sampler_EmissionTextureRead, uv, 0).rgb;
-    }
-
-    // Self-illumination: added after lighting so emissive materials glow even in shadow.
-    base_color += mat.emission.rgb;
-
-    _VisTexture[id.xy] = float4(base_color, 1);
-}
-

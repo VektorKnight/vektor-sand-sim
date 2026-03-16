@@ -10,7 +10,7 @@ namespace FallingSand.Scripts {
     /// Other properties such as fluidity, density, and gravity are regular unsigned 8-bit values.
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
-    public struct MaterialProperties {
+    public struct GpuMaterialDefinition {
         public readonly uint Fluidity;
         public readonly uint Density;
         public readonly int Weight;
@@ -22,7 +22,7 @@ namespace FallingSand.Scripts {
         public readonly float4 Color;
         public readonly float4 Emission;   // Pre-multiplied emission color (RGB * intensity).
 
-        public MaterialProperties(
+        public GpuMaterialDefinition(
             uint fluidity,
             uint density,
             int weight,
@@ -42,12 +42,11 @@ namespace FallingSand.Scripts {
             Emission = emission;
         }
 
-        public static MaterialProperties FromDefinition(MaterialDefinition def) {
+        public static GpuMaterialDefinition FromDefinition(MaterialDefinition def) {
             var linear = def.Color.linear;
 
             // Derive per-channel extinction from opacity and color.
-            // A material's color tells us what it reflects; the complement is what it absorbs.
-            // opacity * (1 - color_linear) gives physically plausible tinted shadows.
+            // opacity * (1 - color_linear) gives nice tinted shadows.
             var ext = new float4(
                 def.Opacity * (1f - linear.r),
                 def.Opacity * (1f - linear.g),
@@ -64,7 +63,7 @@ namespace FallingSand.Scripts {
                 0f
             );
 
-            return new MaterialProperties(
+            return new GpuMaterialDefinition(
                 (uint)def.Fluidity,
                 (uint)def.Density,
                 def.Weight,

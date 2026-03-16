@@ -2,8 +2,8 @@
 
 // ============================================================================
 // Cell data layout (32-bit uint):
-//   [3:0]   Material ID   (4 bits, see ID_* constants)
-//   [7:4]   State flags   (4 bits, see MOVED_* constants)
+//   [4:0]   Material ID   (5 bits, 0-31)
+//   [7:5]   State flags   (3 bits, see MOVED_* constants)
 //   [15:8]  X velocity    (8-bit signed, -127 to 127)
 //   [23:16] Y velocity    (8-bit signed, -127 to 127)
 //   [25:24] Color variant (2 bits, 0-3, set at paint time)
@@ -11,17 +11,25 @@
 // ============================================================================
 
 // Bit offsets for packed cell fields.
-#define OFFSET_FLAGS 4
+#define OFFSET_FLAGS 5
 #define OFFSET_X_VEL 8
 #define OFFSET_Y_VEL 16
 #define OFFSET_VARIANT 24
 
-// Material IDs.
+// ID:0 is expected to be empty/air.
+// C# side could violate this, but it's considered a programmer error to do so.
 #define ID_EMPTY 0
 
 // State flags.
-#define MOVED_LAST_STEP 1   // Cell was moved in a prior red/black pass this step.
+#define MOVED_LAST_STEP 1   // Cell was moved in a prior color pass this step.
 #define MOVED_LAST_FRAME 2  // Cell moved at least once during the previous frame.
+
+// Neighbor offset table.
+// First 4 are cardinal, last 4 are diagonal.
+static const int2 NEIGHBORS[8] = {
+    int2(0, 1), int2(1, 0), int2(0, -1), int2(-1, 0),
+    int2(1, 1), int2(1, -1), int2(-1, -1), int2(-1, 1)
+};
 
 // Material properties for a particle type.
 // Values are expected to be valid following sanitization on the C# side.
@@ -38,6 +46,24 @@ struct MaterialProperties {
     float4 emission;    // Pre-multiplied self-illumination (RGB * intensity).
 };
 
+// Defines a reaction between a source and trigger material.
+// Probability effectively determines reaction rate.
+struct ReactionRule {
+    uint source;
+    uint trigger;
+    uint result;
+    float probability;
+};
+
+// Defines a decay product from a source material.
+// Probability determines rate of decay, think half-lives.
+// Saves us needing some sort of "lifetime" value on particles.
+struct DecayRule {
+    uint source;
+    uint result;
+    float probability;
+};
+
 uint pack_i8(uint packed, int value, uint offset) {
     return (packed & ~(0xFF << offset)) | (((uint)value & 0xFF) << offset);
 }
@@ -47,7 +73,11 @@ int unpack_i8(uint packed, uint offset) {
 }
 
 uint get_mat_id(uint cell) {
-    return cell & 0xF;
+    return cell & 0x1F;
+}
+
+uint set_mat_id(uint cell, uint mat_id) {
+    return (cell & ~0x1F) | (mat_id & 0x1F);
 }
 
 bool is_empty(uint cell) {
@@ -55,11 +85,11 @@ bool is_empty(uint cell) {
 }
 
 uint get_flags(uint cell) {
-    return (cell >> OFFSET_FLAGS) & 0xF;
+    return (cell >> OFFSET_FLAGS) & 0x7;
 }
 
 uint set_flags(uint cell, uint flags) {
-    return (cell & ~(0xF << OFFSET_FLAGS)) | ((flags & 0xF) << OFFSET_FLAGS);
+    return (cell & ~(0x7 << OFFSET_FLAGS)) | ((flags & 0x7) << OFFSET_FLAGS);
 }
 
 bool has_flag(uint cell, uint flag) {
@@ -103,14 +133,19 @@ uint set_variant(uint cell, uint variant) {
     return (cell & ~(0x3 << OFFSET_VARIANT)) | ((variant & 0x3) << OFFSET_VARIANT);
 }
 
-// Proportional drag: decays velocity toward zero scaled by magnitude.
-// Higher velocity = more drag removed, like air resistance.
-// Low velocities are naturally unaffected (integer truncation),
-// preventing drag from overpowering weak gravity.
+// Proportional drag decays velocity toward zero scaled by magnitude.
+// Higher velocity = more drag.
+// Low velocities are naturally unaffected (integer truncation), preventing drag from overpowering weak gravity.
 int apply_drag(int vel, int drag) {
-    if (vel == 0 || drag == 0) return vel;
+    if (vel == 0 || drag == 0) {
+        return vel;
+    }
+    
     int amount = abs(vel) * drag / 256;
-    if (amount == 0) return vel;
+    if (amount == 0) {
+        return vel;
+    }
+    
     return vel > 0 ? max(vel - amount, 0) : min(vel + amount, 0);
 }
 
@@ -122,6 +157,7 @@ uint add_y_vel(uint cell, int delta) {
     return add_vel(cell, delta, OFFSET_Y_VEL);
 }
 
+// Drives most of the random behavior in the simulation.
 // lowbias32-based spatial hash (https://nullprogram.com/blog/2018/07/31/).
 uint hash(uint2 cell, uint frame) {
     uint h = cell.x ^ (cell.y * 747796405u) ^ (frame * 2891336453u);
