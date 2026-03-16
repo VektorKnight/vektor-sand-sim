@@ -93,21 +93,28 @@ bool try_move(int2 from, int2 to, uint cell) {
 
     const uint cell_to = get_cell_data(to);
 
-    // Density swapping for fluids.
+    // Density swapping. At least one must be a fluid, target must not be immovable.
+    // Swap probability scales with density difference and fluidity.
+    // Large density gaps settle fast, small gaps churn. Low fluidity resists displacement.
     if (!is_empty(cell_to)) {
-        // Density swap allowed in all directions if at least one is a fluid.
-        // Four-color tiling guarantees all 8 neighbors are on different passes.
-        // Guards against other threads writing back to our cell (fun race-conditions).
         const MaterialProperties mat_from = get_mat_props(cell);
         const MaterialProperties mat_to   = get_mat_props(cell_to);
-        
+
         if (mat_from.fluidity == 0 && mat_to.fluidity == 0) return false;
         if (mat_to.weight == 0 && mat_to.fluidity == 0) return false;
 
-        // Handle gases a bit differently so lighter ones rise through heavier ones with negative gravity.
         const bool rising = to.y > from.y;
-        if (rising ? (mat_from.density >= mat_to.density) : (mat_from.density <= mat_to.density))
-            return false;
+        const int diff = rising
+            ? (int)mat_to.density - (int)mat_from.density
+            : (int)mat_from.density - (int)mat_to.density;
+        if (diff <= 0) return false;
+
+        const uint fluidity = max(max(mat_from.fluidity, mat_to.fluidity), 32);
+        const uint threshold = min(255, (uint)diff * 4) * fluidity / 255;
+        if (threshold < 255) {
+            if (hash(from, _SimFrame * _SimSteps + _SimStep) % 255 >= threshold)
+                return false;
+        }
     }
 
     const uint flagged_cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
@@ -128,7 +135,6 @@ bool try_move(int2 from, int2 to, uint cell) {
 // Determine if a cell should move this step and tries to execute the move.
 void evaluate_move(uint2 id) {
     const uint cell = get_cell_data(id);
-    const MaterialProperties mat = get_mat_props(cell);
 
     if (is_empty(cell)) {
         return;
@@ -140,6 +146,7 @@ void evaluate_move(uint2 id) {
         return;
     }
 
+    const MaterialProperties mat = get_mat_props(cell);
     const int x_vel = get_x_vel(cell);
     const int y_vel = get_y_vel(cell);
 
@@ -170,17 +177,18 @@ void evaluate_move(uint2 id) {
     }
 
     // Fluid lateral spread via Bresenham gating on fluidity.
-    // TODO: Maybe try probability like reactions/decay instead?
     if (bresenham(mat.fluidity)) {
         const int grav_dir = mat.weight >= 0 ? -1 : 1;
         const int2 ahead = id + int2(0, grav_dir);
-        const bool supported = !in_bounds(ahead) ||
-                               !is_empty(get_cell_data(ahead));
 
-        if (supported && get_mat_props(get_cell_data(ahead)).density >= mat.density) {
-            const int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
-            try_move(id, id + int2(side, 0), cell);
-        }
+        if (!in_bounds(ahead)) return;
+
+        const uint ahead_cell = get_cell_data(ahead);
+        if (is_empty(ahead_cell)) return;
+        if (get_mat_props(ahead_cell).density < mat.density) return;
+
+        const int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
+        try_move(id, id + int2(side, 0), cell);
     }
 }
 
@@ -262,35 +270,27 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     cell = set_x_vel(cell, x_vel);
     cell = set_y_vel(cell, y_vel);
     
-    // Run material interactions after housekeeping and velocity.
-    // Interactions simply change the material based on the neighbors.
-    // Velocity and such will work themselves out over the sim steps based on the new material's properties.
+    // Cache neighbor material IDs before scanning reactions.
+    // Reduces memory pressure if we re-scanned all neighbors ever iteration.
     const uint mat_id = get_mat_id(cell);
+    uint neighbor_mats[8];
+    [unroll]
+    for (uint n = 0; n < 8; n++) {
+        const int2 n_id = id.xy + NEIGHBORS[n];
+        neighbor_mats[n] = in_bounds(n_id) ? get_mat_id(get_cell_data(n_id)) : ID_EMPTY;
+    }
+
+    // Run material reactions.
     bool reacted = false;
     for (uint i = 0; i < _ReactionCount; i++) {
-        if (reacted) {
-            break;
-        }
-        
-        // Skip if the reaction rule does not involve us.
+        if (reacted) break;
+
         const ReactionRule reaction = _Reactions[i];
-        if (reaction.source != mat_id) {
-            continue;
-        }
-        
-        // Check if any neighbors satisfy the reaction rule.
+        if (reaction.source != mat_id) continue;
+
         [unroll]
         for (uint n = 0; n < 8; n++) {
-            // Compute neighbor ID, skip if out of bounds.
-            const int2 n_id = id.xy + NEIGHBORS[n];
-            if (!in_bounds(n_id)) {
-                continue;
-            }
-            
-            // Get the material ID of the neighbors.
-            // If the neighbor is the reaction trigger, try to run the reaction.
-            const uint n_mat_id = get_mat_id(get_cell_data(n_id));
-            if (n_mat_id == reaction.trigger && should_react(id.xy, reaction.probability, i * 8 + n)) {
+            if (neighbor_mats[n] == reaction.trigger && should_react(id.xy, reaction.probability, i * 8 + n)) {
                 cell = make_cell(reaction.result, id.xy);
                 reacted = true;
                 break;

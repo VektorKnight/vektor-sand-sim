@@ -8,7 +8,7 @@ namespace FallingSand.Scripts {
     /// Mostly to make reactions and decay easier to configure.
     /// </summary>
     public enum MaterialId {
-        // Structural solids.
+        // Solids
         Empty      = 0,
         Bedrock    = 1,
         Stone      = 2,
@@ -16,26 +16,30 @@ namespace FallingSand.Scripts {
         Wood       = 4,
         Ice        = 5,
 
-        // Granulars.
+        // Granulars
         Sand       = 6,
         Gravel     = 7,
         Snow       = 8,
         Gunpowder  = 9,
 
-        // Liquids.
+        // Liquids
         Water      = 10,
         Oil        = 11,
         Acid       = 12,
         Lava       = 13,
 
-        // Hot.
+        // Hot
         Fire       = 14,
         Ember      = 15,
         Plasma     = 16,
 
-        // Gases.
+        // Gases
         Steam      = 17,
         Smoke      = 18,
+        
+        // Organics
+        Algae      = 19,
+        Sludge     = 20,
     }
 
     /// <summary>
@@ -102,7 +106,7 @@ namespace FallingSand.Scripts {
                 Color = new Color(0.42f, 0.38f, 0.35f),
             },
             new() {
-                Name = "Glass", Description = "Transparent solid. Made from sand + lava.",
+                Name = "Glass", Description = "Transparent solid. Made from sand and lava.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
                 Variation = 0.1f, Opacity = 0.01f,
                 Color = new Color(0.7f, 0.85f, 0.9f, 0.5f),
@@ -128,7 +132,7 @@ namespace FallingSand.Scripts {
                 Color = new Color(0.8207547f, 0.5865165f, 0.32907617f),
             },
             new() {
-                Name = "Gravel", Description = "Heavy granular. Melted by lava.",
+                Name = "Gravel", Description = "Heavy granular. Slowly melted by lava.",
                 Fluidity = 0, Density = 200, Weight = 128, Drag = 96,
                 Variation = 0.25f, Opacity = 1f,
                 Color = new Color(0.45f, 0.44f, 0.42f),
@@ -168,9 +172,9 @@ namespace FallingSand.Scripts {
                 Color = new Color(0.3f, 0.85f, 0.15f, 0.8f),
             },
             new() {
-                Name = "Lava", Description = "Viscous emissive fluid. Ignites flammables, melts sand into glass.",
+                Name = "Lava", Description = "Hot viscous fluid. Ignites flammables, melts sand into glass.",
                 Fluidity = 4, Density = 125, Weight = 128, Drag = 192,
-                Variation = 0.05f, Opacity = 0.4f,
+                Variation = 0.1f, Opacity = 0.4f,
                 EmissionColor = new Color(1f, 0.4f, 0.1f),
                 EmissionIntensity = 3f,
                 Color = new Color(0.75f, 0.12f, 0.02f),
@@ -178,7 +182,7 @@ namespace FallingSand.Scripts {
 
             // Hot
             new() {
-                Name = "Fire", Description = "Short-lived. Rises, burns out into ember.",
+                Name = "Fire", Description = "Hot, ignites flammables, burns out into ember.",
                 Fluidity = 1, Density = 5, Weight = -16, Drag = 120,
                 Variation = 0.8f, Opacity = 0.05f,
                 EmissionColor = new Color(1f, 0.6f, 0.1f),
@@ -186,7 +190,7 @@ namespace FallingSand.Scripts {
                 Color = new Color(1f, 0.35f, 0f),
             },
             new() {
-                Name = "Ember", Description = "Slow-falling glow. Ignites flammables, decays to smoke.",
+                Name = "Ember", Description = "Slow falling. Ignites flammables, decays to smoke.",
                 Fluidity = 2, Density = 30, Weight = 32, Drag = 220,
                 Variation = 0.6f, Opacity = 0.3f,
                 EmissionColor = new Color(1f, 0.4f, 0.05f),
@@ -194,11 +198,11 @@ namespace FallingSand.Scripts {
                 Color = new Color(0.8f, 0.25f, 0.02f),
             },
             new() {
-                Name = "Plasma", Description = "Extremely hot gas. Melts almost everything.",
+                Name = "Plasma", Description = "Extremely hot. Melts and burns almost everything.",
                 Fluidity = 32, Density = 3, Weight = -24, Drag = 150,
                 Variation = 0.5f, Opacity = 0.03f,
                 EmissionColor = new Color(0.6f, 0.3f, 1f),
-                EmissionIntensity = 4f,
+                EmissionIntensity = 5f,
                 Color = new Color(0.7f, 0.4f, 1f),
             },
 
@@ -215,98 +219,119 @@ namespace FallingSand.Scripts {
                 Variation = 0.2f, Opacity = 0.1f,
                 Color = new Color(0.2f, 0.2f, 0.15f, 0.7f),
             },
+
+            // Organic
+            new() {
+                Name = "Algae", Description = "Grows on water. Decays into sludge.",
+                Fluidity = 1, Density = 60, Weight = 64, Drag = 192,
+                Variation = 0.4f, Opacity = 0.05f,
+                Color = new Color(0.15f, 0.45f, 0.1f),
+            },
+            
+            // Mixtures
+            new() {
+                Name = "Sludge", Description = "Dead biomass. Burns slowly.",
+                Fluidity = 4, Density = 140, Weight = 96, Drag = 200,
+                Variation = 0.2f, Opacity = 0.8f,
+                Color = new Color(0.3f, 0.22f, 0.12f),
+            },
         };
 
         // --- Reactions ---
         
+        // Source -> Trigger -> Result (with some probability determining rate)
         private static readonly List<ReactionRule> _reactions = new() {
-            // Snow freezes into ice on contact with ice.
-            new(MaterialId.Snow, MaterialId.Ice, MaterialId.Ice, 0.01f),
+            // Stone
+            new(MaterialId.Stone, MaterialId.Acid,   MaterialId.Empty, 0.03f),
+            new(MaterialId.Stone, MaterialId.Plasma,  MaterialId.Lava,  0.3f),
 
-            // Snow melts slowly in water.
-            new(MaterialId.Snow, MaterialId.Water, MaterialId.Water, 0.05f),
+            // Glass
+            new(MaterialId.Glass, MaterialId.Acid,   MaterialId.Empty, 0.02f),
+            new(MaterialId.Glass, MaterialId.Plasma,  MaterialId.Lava,  0.2f),
 
-            // Ice melts very slowly in water.
-            new(MaterialId.Ice, MaterialId.Water, MaterialId.Water, 0.005f),
+            // Wood
+            new(MaterialId.Wood, MaterialId.Fire,    MaterialId.Fire,  0.1f),
+            new(MaterialId.Wood, MaterialId.Ember,   MaterialId.Fire,  0.08f),
+            new(MaterialId.Wood, MaterialId.Lava,    MaterialId.Fire,  0.3f),
+            new(MaterialId.Wood, MaterialId.Plasma,  MaterialId.Fire,  0.8f),
+            new(MaterialId.Wood, MaterialId.Acid,    MaterialId.Empty, 0.04f),
 
-            // Steam melts cold surfaces.
-            new(MaterialId.Ice, MaterialId.Steam, MaterialId.Water, 0.01f),
-            new(MaterialId.Snow, MaterialId.Steam, MaterialId.Water, 0.04f),
+            // Ice
+            new(MaterialId.Ice, MaterialId.Water,   MaterialId.Water, 0.005f),
+            new(MaterialId.Ice, MaterialId.Steam,   MaterialId.Water, 0.01f),
+            new(MaterialId.Ice, MaterialId.Fire,    MaterialId.Water, 0.1f),
+            new(MaterialId.Ice, MaterialId.Lava,    MaterialId.Water, 0.5f),
+            new(MaterialId.Ice, MaterialId.Plasma,  MaterialId.Steam, 0.9f),
+            new(MaterialId.Ice, MaterialId.Acid,    MaterialId.Water, 0.06f),
 
-            // Water touching lava boils into steam.
-            new(MaterialId.Water, MaterialId.Lava, MaterialId.Steam, 0.8f),
+            // Sand
+            new(MaterialId.Sand, MaterialId.Lava,   MaterialId.Glass, 0.1f),
+            new(MaterialId.Sand, MaterialId.Plasma,  MaterialId.Glass, 0.6f),
+            new(MaterialId.Sand, MaterialId.Acid,    MaterialId.Empty, 0.08f),
 
-            // Lava touching water/snow/ice cools to stone.
-            new(MaterialId.Lava, MaterialId.Water, MaterialId.Stone, 0.6f),
-            new(MaterialId.Lava, MaterialId.Snow, MaterialId.Stone, 0.8f),
-            new(MaterialId.Lava, MaterialId.Ice, MaterialId.Stone, 0.4f),
+            // Gravel
+            new(MaterialId.Gravel, MaterialId.Lava,  MaterialId.Lava,  0.02f),
+            new(MaterialId.Gravel, MaterialId.Plasma, MaterialId.Lava,  0.5f),
+            new(MaterialId.Gravel, MaterialId.Acid,  MaterialId.Empty, 0.05f),
 
-            // Snow touching lava vaporizes to steam.
-            new(MaterialId.Snow, MaterialId.Lava, MaterialId.Steam, 0.9f),
+            // Snow
+            new(MaterialId.Snow, MaterialId.Ice,    MaterialId.Ice,   0.01f),
+            new(MaterialId.Snow, MaterialId.Water,   MaterialId.Water, 0.05f),
+            new(MaterialId.Snow, MaterialId.Steam,   MaterialId.Water, 0.04f),
+            new(MaterialId.Snow, MaterialId.Fire,    MaterialId.Water, 0.4f),
+            new(MaterialId.Snow, MaterialId.Lava,    MaterialId.Steam, 0.9f),
+            new(MaterialId.Snow, MaterialId.Plasma,  MaterialId.Steam, 0.9f),
 
-            // Ice touching lava melts quickly.
-            new(MaterialId.Ice, MaterialId.Lava, MaterialId.Water, 0.5f),
+            // Gunpowder
+            new(MaterialId.Gunpowder, MaterialId.Fire,   MaterialId.Fire, 0.9f),
+            new(MaterialId.Gunpowder, MaterialId.Ember,  MaterialId.Fire, 0.8f),
+            new(MaterialId.Gunpowder, MaterialId.Lava,   MaterialId.Fire, 0.9f),
+            new(MaterialId.Gunpowder, MaterialId.Plasma, MaterialId.Fire, 0.95f),
 
-            // Sand touching lava melts into glass.
-            new(MaterialId.Sand, MaterialId.Lava, MaterialId.Glass, 0.1f),
+            // Water
+            new(MaterialId.Water, MaterialId.Lava,   MaterialId.Steam, 0.8f),
+            new(MaterialId.Water, MaterialId.Algae,  MaterialId.Algae, 0.005f),
 
-            // Lava slowly melts gravel.
-            new(MaterialId.Gravel, MaterialId.Lava, MaterialId.Lava, 0.02f),
+            // Oil
+            new(MaterialId.Oil, MaterialId.Lava,    MaterialId.Fire,  0.7f),
+            new(MaterialId.Oil, MaterialId.Fire,    MaterialId.Fire,  0.4f),
+            new(MaterialId.Oil, MaterialId.Ember,   MaterialId.Fire,  0.3f),
+            new(MaterialId.Oil, MaterialId.Plasma,  MaterialId.Fire,  0.9f),
 
-            // Oil ignites on lava, fire, or ember.
-            new(MaterialId.Oil, MaterialId.Lava, MaterialId.Fire, 0.7f),
-            new(MaterialId.Oil, MaterialId.Fire, MaterialId.Fire, 0.4f),
-            new(MaterialId.Oil, MaterialId.Ember, MaterialId.Fire, 0.3f),
-
-            // Water extinguishes fire and ember.
-            new(MaterialId.Fire, MaterialId.Water, MaterialId.Steam, 0.9f),
-            new(MaterialId.Ember, MaterialId.Water, MaterialId.Steam, 0.9f),
-
-            // Snow/ice touching fire melts to water.
-            new(MaterialId.Snow, MaterialId.Fire, MaterialId.Water, 0.6f),
-            new(MaterialId.Ice, MaterialId.Fire, MaterialId.Water, 0.3f),
-
-            // Wood catches fire from flames, lava, or ember.
-            new(MaterialId.Wood, MaterialId.Fire, MaterialId.Fire, 0.1f),
-            new(MaterialId.Wood, MaterialId.Lava, MaterialId.Fire, 0.3f),
-            new(MaterialId.Wood, MaterialId.Ember, MaterialId.Fire, 0.08f),
-
-            // Gunpowder ignites instantly from fire, ember, or lava.
-            new(MaterialId.Gunpowder, MaterialId.Fire, MaterialId.Fire, 0.9f),
-            new(MaterialId.Gunpowder, MaterialId.Ember, MaterialId.Fire, 0.8f),
-            new(MaterialId.Gunpowder, MaterialId.Lava, MaterialId.Fire, 0.9f),
-
-            // Acid dissolves stone, gravel, sand, ice, wood, glass.
-            new(MaterialId.Stone, MaterialId.Acid, MaterialId.Empty, 0.03f),
-            new(MaterialId.Gravel, MaterialId.Acid, MaterialId.Empty, 0.05f),
-            new(MaterialId.Sand, MaterialId.Acid, MaterialId.Empty, 0.08f),
-            new(MaterialId.Ice, MaterialId.Acid, MaterialId.Water, 0.06f),
-            new(MaterialId.Wood, MaterialId.Acid, MaterialId.Empty, 0.04f),
-            new(MaterialId.Glass, MaterialId.Acid, MaterialId.Empty, 0.02f),
-            
-            // Acid is diluted by water.
-            new(MaterialId.Acid, MaterialId.Water, MaterialId.Water, 0.05f),
-
-            // Acid boils off on lava, fire, and plasma.
-            new(MaterialId.Acid, MaterialId.Lava, MaterialId.Steam, 0.7f),
-            new(MaterialId.Acid, MaterialId.Fire, MaterialId.Steam, 0.5f),
+            // Acid
+            new(MaterialId.Acid, MaterialId.Water,  MaterialId.Water, 0.05f),
+            new(MaterialId.Acid, MaterialId.Lava,   MaterialId.Steam, 0.7f),
+            new(MaterialId.Acid, MaterialId.Fire,   MaterialId.Steam, 0.5f),
             new(MaterialId.Acid, MaterialId.Plasma, MaterialId.Steam, 0.9f),
 
-            // Plasma melts solids that fire can't.
-            new(MaterialId.Stone, MaterialId.Plasma, MaterialId.Lava, 0.3f),
-            new(MaterialId.Gravel, MaterialId.Plasma, MaterialId.Lava, 0.5f),
-            new(MaterialId.Sand, MaterialId.Plasma, MaterialId.Glass, 0.6f),
-            new(MaterialId.Ice, MaterialId.Plasma, MaterialId.Steam, 0.9f),
-            new(MaterialId.Snow, MaterialId.Plasma, MaterialId.Steam, 0.9f),
-            new(MaterialId.Wood, MaterialId.Plasma, MaterialId.Fire, 0.8f),
-            new(MaterialId.Glass, MaterialId.Plasma, MaterialId.Lava, 0.2f),
+            // Lava
+            new(MaterialId.Lava, MaterialId.Water,  MaterialId.Stone, 0.4f),
+            new(MaterialId.Lava, MaterialId.Snow,   MaterialId.Stone, 0.5f),
+            new(MaterialId.Lava, MaterialId.Ice,    MaterialId.Stone, 0.6f),
 
-            // Gunpowder and oil ignite from plasma.
-            new(MaterialId.Gunpowder, MaterialId.Plasma, MaterialId.Fire, 0.95f),
-            new(MaterialId.Oil, MaterialId.Plasma, MaterialId.Fire, 0.9f),
+            // Fire
+            new(MaterialId.Fire, MaterialId.Water,  MaterialId.Steam, 0.9f),
 
-            // Water quenches plasma.
+            // Ember
+            new(MaterialId.Ember, MaterialId.Water, MaterialId.Steam, 0.9f),
+
+            // Plasma
             new(MaterialId.Plasma, MaterialId.Water, MaterialId.Steam, 0.7f),
+
+            // Sludge
+            new(MaterialId.Sludge, MaterialId.Lava,   MaterialId.Fire, 0.2f),
+            new(MaterialId.Sludge, MaterialId.Fire,   MaterialId.Fire, 0.07f),
+            new(MaterialId.Sludge, MaterialId.Ember,  MaterialId.Fire, 0.05f),
+            new(MaterialId.Sludge, MaterialId.Plasma, MaterialId.Fire, 0.8f),
+
+            // Algae
+            new(MaterialId.Algae, MaterialId.Fire,  MaterialId.Smoke, 0.1f),
+            new(MaterialId.Algae, MaterialId.Ember, MaterialId.Smoke, 0.05f),
+            new(MaterialId.Algae, MaterialId.Lava,  MaterialId.Smoke, 0.9f),
+            new(MaterialId.Algae, MaterialId.Acid,  MaterialId.Empty, 0.1f),
+            
+            new(MaterialId.Algae, MaterialId.Snow, MaterialId.Sludge, 0.05f),
+            new(MaterialId.Algae, MaterialId.Ice, MaterialId.Sludge, 0.05f),
         };
 
         // --- Decay ---
@@ -329,6 +354,9 @@ namespace FallingSand.Scripts {
 
             // Acid slowly evaporates.
             new(MaterialId.Acid, MaterialId.Smoke, 0.002f),
+            
+            // Algae slowly dies off into mud.
+            new(MaterialId.Algae, MaterialId.Sludge, 0.0001f)
         };
     }
 }
