@@ -292,9 +292,30 @@ namespace FallingSand.Scripts {
             _hudText.raycastTarget = false;
         }
 
-        // ---- PlayerPrefs persistence ----
+        // ---- JSON file persistence ----
 
-        private const string PK = "sand_";
+        private const string SettingsFile = "settings.json";
+
+        [Serializable]
+        private class Settings {
+            public bool lightEnabled = true;
+            public bool bloomEnabled = true;
+            public int lightDownscale = 3;
+            public float lightAngle = 60f;
+            public float lightIntensity = 2f;
+            public float lightR = 1f, lightG = 1f, lightB = 1f;
+            public float ambientR = 0.1f, ambientG = 0.1f, ambientB = 0.1f;
+            public int resolution = (int)SimResolution.Res1920x1080;
+            public int windowScale = 1;
+            public int frameCap;
+            public int paintRadius = 5;
+            public int selectedMat = 1;
+        }
+
+        private static string GetSettingsPath() {
+            var dir = System.IO.Path.GetDirectoryName(Application.dataPath);
+            return System.IO.Path.Combine(dir, SettingsFile);
+        }
 
         private static bool ShouldPersist() {
 #if UNITY_EDITOR
@@ -306,50 +327,57 @@ namespace FallingSand.Scripts {
 
         private void LoadSettings() {
             if (!ShouldPersist()) return;
-            if (!PlayerPrefs.HasKey(PK + "saved")) return;
+            var path = GetSettingsPath();
+            if (!System.IO.File.Exists(path)) return;
 
-            _sim.Lighting.LightEnabled = PlayerPrefs.GetInt(PK + "lightEnabled", 1) != 0;
-            _sim.Lighting.BloomEnabled = PlayerPrefs.GetInt(PK + "bloomEnabled", 1) != 0;
-            _sim.Lighting.LightDownscale = PlayerPrefs.GetInt(PK + "lightDownscale", 3);
-            _sim.Lighting.LightAngle = PlayerPrefs.GetFloat(PK + "lightAngle", 60f);
-            _sim.Lighting.LightIntensity = PlayerPrefs.GetFloat(PK + "lightIntensity", 2f);
-            _sim.Lighting.LightColor = new Color(
-                PlayerPrefs.GetFloat(PK + "lightR", 1f),
-                PlayerPrefs.GetFloat(PK + "lightG", 1f),
-                PlayerPrefs.GetFloat(PK + "lightB", 1f));
-            _sim.Lighting.AmbientColor = new Color(
-                PlayerPrefs.GetFloat(PK + "ambientR", 0.1f),
-                PlayerPrefs.GetFloat(PK + "ambientG", 0.1f),
-                PlayerPrefs.GetFloat(PK + "ambientB", 0.1f));
-            _sim.Resolution = (SimResolution)PlayerPrefs.GetInt(PK + "resolution", (int)SimResolution.Res1920x1080);
-            _sim.WindowScale = PlayerPrefs.GetInt(PK + "windowScale", 1);
-            _sim.FrameCap = (FrameRateCap)PlayerPrefs.GetInt(PK + "frameCap", 0);
-            _sim.PaintRadius = PlayerPrefs.GetInt(PK + "paintRadius", 5);
-            _sim.SelectedMaterialIndex = PlayerPrefs.GetInt(PK + "selectedMat", 0);
+            try {
+                var json = System.IO.File.ReadAllText(path);
+                var s = JsonUtility.FromJson<Settings>(json);
+
+                _sim.Lighting.LightEnabled = s.lightEnabled;
+                _sim.Lighting.BloomEnabled = s.bloomEnabled;
+                _sim.Lighting.LightDownscale = Mathf.Clamp(s.lightDownscale, 2, 4);
+                _sim.Lighting.LightAngle = Mathf.Clamp(s.lightAngle, 0f, 360f);
+                _sim.Lighting.LightIntensity = Mathf.Clamp(s.lightIntensity, 0f, 5f);
+                _sim.Lighting.LightColor = new Color(
+                    Mathf.Clamp01(s.lightR), Mathf.Clamp01(s.lightG), Mathf.Clamp01(s.lightB));
+                _sim.Lighting.AmbientColor = new Color(
+                    Mathf.Clamp01(s.ambientR), Mathf.Clamp01(s.ambientG), Mathf.Clamp01(s.ambientB));
+                _sim.Resolution = (SimResolution)Mathf.Clamp(s.resolution, 0, 4);
+                _sim.WindowScale = s.windowScale; // Setter already clamps 1-3.
+                _sim.FrameCap = (FrameRateCap)Mathf.Clamp(s.frameCap, 0, 1);
+                _sim.PaintRadius = s.paintRadius; // Setter already clamps to min/max.
+                _sim.SelectedMaterialIndex = s.selectedMat; // Setter already clamps to valid range.
+            } catch (System.Exception e) {
+                Debug.LogWarning($"Failed to load settings: {e.Message}");
+            }
         }
 
         private void SaveSettings() {
             if (!ShouldPersist()) return;
-            PlayerPrefs.SetInt(PK + "saved", 1);
-            PlayerPrefs.SetInt(PK + "lightEnabled", _sim.Lighting.LightEnabled ? 1 : 0);
-            PlayerPrefs.SetInt(PK + "bloomEnabled", _sim.Lighting.BloomEnabled ? 1 : 0);
-            PlayerPrefs.SetInt(PK + "lightDownscale", _sim.Lighting.LightDownscale);
-            PlayerPrefs.SetFloat(PK + "lightAngle", _sim.Lighting.LightAngle);
-            PlayerPrefs.SetFloat(PK + "lightIntensity", _sim.Lighting.LightIntensity);
             var lc = _sim.Lighting.LightColor;
-            PlayerPrefs.SetFloat(PK + "lightR", lc.r);
-            PlayerPrefs.SetFloat(PK + "lightG", lc.g);
-            PlayerPrefs.SetFloat(PK + "lightB", lc.b);
             var ac = _sim.Lighting.AmbientColor;
-            PlayerPrefs.SetFloat(PK + "ambientR", ac.r);
-            PlayerPrefs.SetFloat(PK + "ambientG", ac.g);
-            PlayerPrefs.SetFloat(PK + "ambientB", ac.b);
-            PlayerPrefs.SetInt(PK + "resolution", (int)_sim.Resolution);
-            PlayerPrefs.SetInt(PK + "windowScale", _sim.WindowScale);
-            PlayerPrefs.SetInt(PK + "frameCap", (int)_sim.FrameCap);
-            PlayerPrefs.SetInt(PK + "paintRadius", _sim.PaintRadius);
-            PlayerPrefs.SetInt(PK + "selectedMat", _sim.SelectedMaterialIndex);
-            PlayerPrefs.Save();
+
+            var s = new Settings {
+                lightEnabled = _sim.Lighting.LightEnabled,
+                bloomEnabled = _sim.Lighting.BloomEnabled,
+                lightDownscale = _sim.Lighting.LightDownscale,
+                lightAngle = _sim.Lighting.LightAngle,
+                lightIntensity = _sim.Lighting.LightIntensity,
+                lightR = lc.r, lightG = lc.g, lightB = lc.b,
+                ambientR = ac.r, ambientG = ac.g, ambientB = ac.b,
+                resolution = (int)_sim.Resolution,
+                windowScale = _sim.WindowScale,
+                frameCap = (int)_sim.FrameCap,
+                paintRadius = _sim.PaintRadius,
+                selectedMat = _sim.SelectedMaterialIndex,
+            };
+
+            try {
+                System.IO.File.WriteAllText(GetSettingsPath(), JsonUtility.ToJson(s, true));
+            } catch (System.Exception e) {
+                Debug.LogWarning($"Failed to save settings: {e.Message}");
+            }
         }
 
         // ---- Utilities ----

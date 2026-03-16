@@ -141,7 +141,7 @@ namespace FallingSand.Scripts {
                 Name = "Snow", Description = "Light powder. Melts in water, freezes on ice.",
                 Fluidity = 1, Density = 50, Weight = 128, Drag = 192,
                 Variation = 0.5f, Opacity = 0.04f,
-                Color = new Color(0.85f, 0.88f, 0.95f),
+                Color = new Color(0.75f, 0.84f, 0.95f),
             },
             new() {
                 Name = "Gunpowder", Description = "Flammable granular. Ignites almost instantly.",
@@ -224,7 +224,7 @@ namespace FallingSand.Scripts {
             new() {
                 Name = "Algae", Description = "Grows on water. Decays into sludge.",
                 Fluidity = 2, Density = 60, Weight = 64, Drag = 192,
-                Variation = 0.4f, Opacity = 0.05f,
+                Variation = 0.4f, Opacity = 0.04f,
                 Color = new Color(0.15f, 0.45f, 0.1f),
             },
             
