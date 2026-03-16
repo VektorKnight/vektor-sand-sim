@@ -96,6 +96,7 @@ bool try_move(int2 from, int2 to, uint cell) {
     // Density swapping. At least one must be a fluid, target must not be immovable.
     // Swap probability scales with density difference and fluidity.
     // Large density gaps settle fast, small gaps churn. Low fluidity resists displacement.
+    // TODO: Admittedly I'm dart-boarding a lot here. Current approach seems decent but still not amazing.
     if (!is_empty(cell_to)) {
         const MaterialProperties mat_from = get_mat_props(cell);
         const MaterialProperties mat_to   = get_mat_props(cell_to);
@@ -108,20 +109,23 @@ bool try_move(int2 from, int2 to, uint cell) {
             ? (int)mat_to.density - (int)mat_from.density
             : (int)mat_from.density - (int)mat_to.density;
         if (diff <= 0) return false;
-
-        const uint fluidity = max(max(mat_from.fluidity, mat_to.fluidity), 32);
-        const uint threshold = min(255, (uint)diff * 4) * fluidity / 255;
-        if (threshold < 255) {
-            if (hash(from, _SimFrame * _SimSteps + _SimStep) % 255 >= threshold)
-                return false;
+        
+        // Best version so far.
+        // Fixes an issue where very viscous fluids would effectively halt heavier granulars from passing through.
+        // Somewhat accurate like tar but not very "fun".
+        const uint roll = hash(from, _SimFrame * _SimSteps + _SimStep) % 65536;
+        const uint chance = (uint)diff * max(mat_from.fluidity, mat_to.fluidity);
+        if (roll >= chance) {
+            return false;
         }
     }
 
+    // Update movement flags.
     const uint flagged_cell = add_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
     const uint flagged_to = clear_flag(cell_to, MOVED_LAST_STEP);
 
     // Two same-pass cells can target the same cardinal neighbor, so a CAS is required.
-    // The source write is non-atomic as four-color tiling guarantees no same-pass thread is adjacent to us.
+    // The source write is non-atomic as four-color tiling guarantees no same-pass thread can write back to us.
     int original;
     InterlockedCompareExchange(_SimData[to_flat(to)], cell_to, flagged_cell, original);
     if ((uint)original == cell_to) {
@@ -133,6 +137,7 @@ bool try_move(int2 from, int2 to, uint cell) {
 }
 
 // Determine if a cell should move this step and tries to execute the move.
+// Cell ID is expected to be in-bounds.
 void evaluate_move(uint2 id) {
     const uint cell = get_cell_data(id);
 
@@ -146,6 +151,10 @@ void evaluate_move(uint2 id) {
         return;
     }
 
+    // Fetch material properties and cell velocities for evaluation.
+    // Moves are attempted with Bresenham gating.
+    // Cells may only make a single move per-step.
+    // Moves are expected to work out over the total steps in a frame.
     const MaterialProperties mat = get_mat_props(cell);
     const int x_vel = get_x_vel(cell);
     const int y_vel = get_y_vel(cell);
@@ -159,7 +168,8 @@ void evaluate_move(uint2 id) {
         const uint h = hash(id, _SimFrame);
         const int side = (h & 1) == 0 ? -1 : 1;
         const bool diagonal_first = ((h >> 2) & 3) == 0;
-
+        
+        // Diagonal first breaks up column patterns.
         if (diagonal_first) {
             if (try_move(id, id + int2(side, dir), cell)) return;
             if (try_move(id, id + int2(0, dir), cell)) return;
@@ -177,24 +187,27 @@ void evaluate_move(uint2 id) {
     }
 
     // Fluid lateral spread via Bresenham gating on fluidity.
+    // Attempts extra horizontal moves for fluids using a similar approach to x-velocity.
+    // TODO: Not entirely happy with this still, need further exploration.
     if (bresenham(mat.fluidity)) {
         const int grav_dir = mat.weight >= 0 ? -1 : 1;
         const int2 ahead = id + int2(0, grav_dir);
 
-        if (!in_bounds(ahead)) return;
+        if (!in_bounds(ahead))return;
 
         const uint ahead_cell = get_cell_data(ahead);
         if (is_empty(ahead_cell)) return;
         if (get_mat_props(ahead_cell).density < mat.density) return;
 
         const int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
+        
         try_move(id, id + int2(side, 0), cell);
     }
 }
 
 // Creates a fresh cell with the given material ID and a position-based color variant.
 uint make_cell(uint mat_id, int2 pos) {
-    uint c = set_mat_id(0u, mat_id);
+    const uint c = set_mat_id(0u, mat_id);
     return set_variant(c, hash(pos, 0) & 0x3);
 }
 
@@ -212,12 +225,14 @@ void Paint(uint3 id : SV_DispatchThreadID) {
     const int dy = cell.y - _PaintY;
     const int d2 = dx * dx + dy * dy;
 
+    // Out of bounds or out of the paint radius.
     if (cell.x < 0 || cell.x >= _SimWidth ||
         cell.y < 0 || cell.y >= _SimHeight ||
         d2 > _PaintR * _PaintR) {
         return;
     }
-
+    
+    
     if (!_PaintReplace && _PaintType != ID_EMPTY) {
         if (!is_empty(get_cell_data(cell))) {
             return;
@@ -243,6 +258,7 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
+    // Fetch cell data and material properties for evaluation.
     uint cell = get_cell_data(id.xy);
     const MaterialProperties mat = get_mat_props(cell);
 
@@ -250,6 +266,8 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         return;
     }
 
+    // Check move flags and clear.
+    // If a cell failed to move over an entire simulation frame, consider it stuck and zero velocity.
     const bool moved = has_flag(cell, MOVED_LAST_FRAME);
     cell = clear_flag(cell, MOVED_LAST_STEP | MOVED_LAST_FRAME);
 
@@ -258,6 +276,7 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         cell = set_y_vel(cell, 0);
     }
 
+    // Apply gravity and drag forces.
     int x_vel = get_x_vel(cell);
     int y_vel = get_y_vel(cell);
 
@@ -271,9 +290,10 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     cell = set_y_vel(cell, y_vel);
     
     // Cache neighbor material IDs before scanning reactions.
-    // Reduces memory pressure if we re-scanned all neighbors ever iteration.
+    // Reduces memory pressure versus we re-scanning all neighbors every iteration.
     const uint mat_id = get_mat_id(cell);
     uint neighbor_mats[8];
+    
     [unroll]
     for (uint n = 0; n < 8; n++) {
         const int2 n_id = id.xy + NEIGHBORS[n];
@@ -283,11 +303,19 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     // Run material reactions.
     bool reacted = false;
     for (uint i = 0; i < _ReactionCount; i++) {
-        if (reacted) break;
-
+        // Stop evaluating reactions if we already reacted.
+        if (reacted) {
+            break;
+        }
+        
+        // Skip if reaction rule does not involve us.
         const ReactionRule reaction = _Reactions[i];
-        if (reaction.source != mat_id) continue;
-
+        if (reaction.source != mat_id) {
+            continue;
+        }
+        
+        // Determine if this rule applies with any neighbors.
+        // Also gated by reaction probability to approximate reaction rate.
         [unroll]
         for (uint n = 0; n < 8; n++) {
             if (neighbor_mats[n] == reaction.trigger && should_react(id.xy, reaction.probability, i * 8 + n)) {
@@ -298,21 +326,23 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         }
     }
     
-    // Run material decays.
-    for (uint i = 0; i < _DecayCount; i++) {
-        // Skip if the decay rule does not involve us.
-        const DecayRule decay = _Decay[i];
-        if (decay.source != mat_id) {
-            continue;
-        }
+    // Run material decays if a reaction did not occur.
+    if (!reacted) {
+        for (uint i = 0; i < _DecayCount; i++) {
+            // Skip if the decay rule does not involve us.
+            const DecayRule decay = _Decay[i];
+            if (decay.source != mat_id) {
+                continue;
+            }
         
-        // Try to run the decay rule if it matches.
-        if (should_react(id.xy, decay.probability, 256u + i)) {
-            cell = make_cell(decay.result, id.xy);
+            // Try to run the decay rule if it matches.
+            // Gated by probability to approximate a lifetime.
+            if (should_react(id.xy, decay.probability, 256u + i)) {
+                cell = make_cell(decay.result, id.xy);
+                break;
+            }
         }
-        
     }
-    
     
     set_cell_data(id.xy, cell);
 }
@@ -322,6 +352,7 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
 // ============================================================================
 [numthreads(8,8,1)]
 void Simulate(uint3 id : SV_DispatchThreadID) {
+    // Compute cell position within the 4-color tiling pattern for this dispatch.
     const int half_w = (_SimWidth + 1) / 2;
     const int mx = ((_SimStep + _SimFrame) & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
     const int2 cell_id = int2(mx * 2 + (_SimPass & 1), (int)id.y * 2 + ((_SimPass >> 1) & 1));

@@ -306,8 +306,8 @@ MonoBehaviour:
   _compute: {fileID: 7200000, guid: 1290b8069b2f54e598ebc97a242cea03, type: 3}
   _lightAngle: 60
   _lightColor: {r: 1, g: 1, b: 1, a: 1}
-  _lightIntensity: 2.25
-  _ambientColor: {r: 0.45546874, g: 0.48984373, b: 0.55, a: 1}
+  _lightIntensity: 3
+  _ambientColor: {r: 0.42893377, g: 0.49096096, b: 0.5943396, a: 1}
   _lightMaxSteps: 1024
   _lightDownscale: 4
   _lightBlurPasses: 3

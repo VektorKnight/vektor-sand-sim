@@ -231,7 +231,7 @@ namespace FallingSand.Scripts {
             // Mixtures
             new() {
                 Name = "Sludge", Description = "Dead biomass. Burns slowly.",
-                Fluidity = 4, Density = 140, Weight = 96, Drag = 200,
+                Fluidity = 4, Density = 160, Weight = 96, Drag = 200,
                 Variation = 0.2f, Opacity = 0.8f,
                 Color = new Color(0.3f, 0.22f, 0.12f),
             },
