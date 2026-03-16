@@ -1,6 +1,7 @@
-ow how # vektor-sand-sim
+# vektor-sand-sim
 
-GPU-accelerated falling sand simulation in Unity. Runs entirely on compute shaders with four-color tiling for race-free particle movement.
+A GPU falling sand sim built in Unity. The whole thing runs in GPU compute. Four-color tiling keeps parallel threads from stomping each other, Bresenham gating handles variable-speed particles, and a Beer's law raymarch pass does lighting with emission and soft shadows.
+Started as a deep-dive into GPU compute and parallel cellular automata. Got a bit excited adding feature and well, turned out pretty cool. Would like to add a pressure and velocity layer eventually. Radiance cascades might be worth a look as well for even fancier lighting.
 
 ## Features
 
