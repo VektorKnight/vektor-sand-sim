@@ -173,7 +173,7 @@ namespace FallingSand.Scripts {
             },
             new() {
                 Name = "Lava", Description = "Hot viscous fluid. Ignites flammables, melts sand into glass.",
-                Fluidity = 4, Density = 125, Weight = 128, Drag = 192,
+                Fluidity = 8, Density = 190, Weight = 128, Drag = 192,
                 Variation = 0.1f, Opacity = 0.4f,
                 EmissionColor = new Color(1f, 0.4f, 0.1f),
                 EmissionIntensity = 3f,
@@ -240,7 +240,7 @@ namespace FallingSand.Scripts {
         // --- Reactions ---
         
         // Source -> Trigger -> Result (with some probability determining rate)
-        // TODO: Investigate if indexing this on the GPU-side is a potential bottleneck.
+        // Uploaded as a [MAX_MATERIALS * MAX_MATERIALS] LUT on the GPU.
         private static readonly List<ReactionRule> _reactions = new() {
             // Stone
             new(MaterialId.Stone, MaterialId.Acid,   MaterialId.Empty, 0.03f),

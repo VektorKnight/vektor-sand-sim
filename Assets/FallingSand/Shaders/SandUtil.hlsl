@@ -1,14 +1,26 @@
 #pragma once
 
 // ============================================================================
+// Shared utilities for the falling-sand simulation.
+//
 // Cell data layout (32-bit uint):
-//   [4:0]   Material ID   (5 bits, 0-31)
+//   [4:0]   Material ID   (MAT_ID_BITS)
 //   [7:5]   State flags   (3 bits, see MOVED_* constants)
 //   [15:8]  X velocity    (8-bit signed, -127 to 127)
 //   [23:16] Y velocity    (8-bit signed, -127 to 127)
 //   [25:24] Color variant (2 bits, 0-3, set at paint time)
 //   [31:26] Unused
+//
+// Interaction LUTs:
+//   Reactions - MAX_MATERIALS * MAX_MATERIALS, indexed [source * MAX_MATERIALS + trigger]
+//   Decay     - MAX_MATERIALS LUT, indexed by material ID
+//   Probability of zero in either table indicates "no rule".
 // ============================================================================
+
+// Material ID sizing.
+#define MAT_ID_BITS 5
+#define MAT_ID_MASK ((1u << MAT_ID_BITS) - 1)
+#define MAX_MATERIALS (1u << MAT_ID_BITS)
 
 // Bit offsets for packed cell fields.
 #define OFFSET_FLAGS 5
@@ -38,7 +50,7 @@ struct MaterialProperties {
     uint fluidity;
     uint density;
     int weight;     // Scales global _Gravity. 256 = normal, 0 = weightless, negative = buoyant.
-    uint drag;      // Proportional velocity decay. Terminal vel emerges from weight/drag balance.
+    uint drag;      // Proportional velocity decay. Terminal velocity emerges from weight/drag balance.
 
     float variation;    // Brightness spread for color variants. 0 = flat, >0 = per-particle variation.
     float4 extinction;  // Per-channel light absorption (RGB). Derived from opacity and color on CPU.
@@ -46,20 +58,14 @@ struct MaterialProperties {
     float4 emission;    // Pre-multiplied self-illumination (RGB * intensity).
 };
 
-// Defines a reaction between a source and trigger material.
-// Probability effectively determines reaction rate.
-struct ReactionRule {
-    uint source;
-    uint trigger;
+// Reaction LUT entry.
+struct ReactionEntry {
     uint result;
     float probability;
 };
 
-// Defines a decay product from a source material.
-// Probability determines rate of decay, think half-lives.
-// Saves us needing some sort of "lifetime" value on particles.
-struct DecayRule {
-    uint source;
+// Decay LUT entry indexed by material ID.
+struct DecayEntry {
     uint result;
     float probability;
 };
@@ -73,11 +79,11 @@ int unpack_i8(uint packed, uint offset) {
 }
 
 uint get_mat_id(uint cell) {
-    return cell & 0x1F;
+    return cell & MAT_ID_MASK;
 }
 
 uint set_mat_id(uint cell, uint mat_id) {
-    return (cell & ~0x1F) | (mat_id & 0x1F);
+    return (cell & ~MAT_ID_MASK) | (mat_id & MAT_ID_MASK);
 }
 
 bool is_empty(uint cell) {

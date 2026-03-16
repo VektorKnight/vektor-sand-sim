@@ -42,10 +42,8 @@ StructuredBuffer<MaterialProperties> _Materials;
 RWStructuredBuffer<uint> _SimData;
 
 // Interaction tables.
-StructuredBuffer<ReactionRule> _Reactions;
-StructuredBuffer<DecayRule> _Decay;
-int _ReactionCount;
-int _DecayCount;
+StructuredBuffer<ReactionEntry> _Reactions; // LUT indexed by [source * MAX_MATERIALS + trigger]
+StructuredBuffer<DecayEntry> _Decay; // LUT indexed by material ID
 
 // Convert a 2D index to 1D buffer.
 int to_flat(int2 i) {
@@ -300,47 +298,30 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         neighbor_mats[n] = in_bounds(n_id) ? get_mat_id(get_cell_data(n_id)) : ID_EMPTY;
     }
 
-    // Run material reactions.
+    // Run material reactions by indexing into the reaction LUT.
+    // Keeps lookups O(1) over the O(n) of the previous naive version.
+    // Same LUT strategy applies to decay.
     bool reacted = false;
-    for (uint i = 0; i < _ReactionCount; i++) {
-        // Stop evaluating reactions if we already reacted.
-        if (reacted) {
+    const uint lut_row = mat_id * MAX_MATERIALS;
+
+    [unroll]
+    for (uint n = 0; n < 8; n++) {
+        const ReactionEntry reaction = _Reactions[lut_row + neighbor_mats[n]];
+        if (reaction.probability > 0 && should_react(id.xy, reaction.probability, mat_id * 8 + n)) {
+            cell = make_cell(reaction.result, id.xy);
+            
+            reacted = true;
+            
             break;
-        }
-        
-        // Skip if reaction rule does not involve us.
-        const ReactionRule reaction = _Reactions[i];
-        if (reaction.source != mat_id) {
-            continue;
-        }
-        
-        // Determine if this rule applies with any neighbors.
-        // Also gated by reaction probability to approximate reaction rate.
-        [unroll]
-        for (uint n = 0; n < 8; n++) {
-            if (neighbor_mats[n] == reaction.trigger && should_react(id.xy, reaction.probability, i * 8 + n)) {
-                cell = make_cell(reaction.result, id.xy);
-                reacted = true;
-                break;
-            }
         }
     }
     
-    // Run material decays if a reaction did not occur.
+    // Run material decay if a reaction did not occur.
+    // We don't want double-mutations in the same frame as it would clobber intermediates.
     if (!reacted) {
-        for (uint i = 0; i < _DecayCount; i++) {
-            // Skip if the decay rule does not involve us.
-            const DecayRule decay = _Decay[i];
-            if (decay.source != mat_id) {
-                continue;
-            }
-        
-            // Try to run the decay rule if it matches.
-            // Gated by probability to approximate a lifetime.
-            if (should_react(id.xy, decay.probability, 256u + i)) {
-                cell = make_cell(decay.result, id.xy);
-                break;
-            }
+        const DecayEntry decay = _Decay[mat_id];
+        if (decay.probability > 0 && should_react(id.xy, decay.probability, 256u + mat_id)) {
+            cell = make_cell(decay.result, id.xy);
         }
     }
     

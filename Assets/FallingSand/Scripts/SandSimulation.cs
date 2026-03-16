@@ -23,6 +23,9 @@ namespace FallingSand.Scripts {
     ///   F12               – save screenshot
     /// </summary>
     public class SandSimulation : MonoBehaviour {
+        // Must match MAT_ID_BITS in SandUtil.hlsl.
+        private const int MaxMaterials = 1 << 5;
+
         // Fix for windows to maintain proper resolution on high DPI.
 #if UNITY_STANDALONE_WIN && !UNITY_EDITOR
         [DllImport("user32.dll")]
@@ -52,16 +55,13 @@ namespace FallingSand.Scripts {
 
         // GPU-side interaction structs. Must match SandUtil.hlsl layout.
         [StructLayout(LayoutKind.Sequential)]
-        private struct GpuReactionRule {
-            public uint Source;
-            public uint Trigger;
+        private struct GpuReactionEntry {
             public uint Result;
             public float Probability;
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        private struct GpuDecayRule {
-            public uint Source;
+        private struct GpuDecayEntry {
             public uint Result;
             public float Probability;
         }
@@ -120,8 +120,6 @@ namespace FallingSand.Scripts {
         private static readonly int ID_SIM_DATA         = Shader.PropertyToID("_SimData");
         private static readonly int ID_REACTIONS        = Shader.PropertyToID("_Reactions");
         private static readonly int ID_DECAY            = Shader.PropertyToID("_Decay");
-        private static readonly int ID_REACTION_COUNT   = Shader.PropertyToID("_ReactionCount");
-        private static readonly int ID_DECAY_COUNT      = Shader.PropertyToID("_DecayCount");
 
         // --- Public API ---
 
@@ -530,54 +528,39 @@ namespace FallingSand.Scripts {
             _compute.SetBuffer(KERNEL_SIM, ID_MATERIALS, _materialBuffer);
             _lighting.BindMaterials(_materialBuffer);
 
-            // Upload reaction table.
+            // Upload reaction LUT indexed by [source * MaxMaterials + trigger].
             if (_reactionBuffer != null && _reactionBuffer.IsValid()) {
                 _reactionBuffer.Release();
             }
-            
-            var reactions = MaterialTable.Reactions;
-            var reactionData = new GpuReactionRule[reactions.Count];
-            for (var i = 0; i < reactions.Count; i++) {
-                reactionData[i] = new GpuReactionRule {
-                    Source = (uint)reactions[i].Source,
-                    Trigger = (uint)reactions[i].Trigger,
-                    Result = (uint)reactions[i].Result,
-                    Probability = reactions[i].Probability,
+
+            var lut = new GpuReactionEntry[MaxMaterials * MaxMaterials];
+            foreach (var r in MaterialTable.Reactions) {
+                lut[(int)r.Source * MaxMaterials + (int)r.Trigger] = new GpuReactionEntry {
+                    Result = (uint)r.Result,
+                    Probability = r.Probability,
                 };
             }
-            
-            _reactionBuffer = new ComputeBuffer(Mathf.Max(1, reactions.Count), Marshal.SizeOf<GpuReactionRule>());
 
-            if (reactions.Count > 0) {
-                _reactionBuffer.SetData(reactionData);
-            }
-            
+            _reactionBuffer = new ComputeBuffer(MaxMaterials * MaxMaterials, Marshal.SizeOf<GpuReactionEntry>());
+            _reactionBuffer.SetData(lut);
             _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_REACTIONS, _reactionBuffer);
-            _compute.SetInt(ID_REACTION_COUNT, reactions.Count);
 
-            // Upload decay table.
+            // Upload decay LUT indexed by material ID.
             if (_decayBuffer != null && _decayBuffer.IsValid()) {
                 _decayBuffer.Release();
             }
-            
-            var decay = MaterialTable.Decay;
-            var decayData = new GpuDecayRule[decay.Count];
-            for (var i = 0; i < decay.Count; i++) {
-                decayData[i] = new GpuDecayRule {
-                    Source = (uint)decay[i].Source,
-                    Result = (uint)decay[i].Result,
-                    Probability = decay[i].Probability,
+
+            var decayLut = new GpuDecayEntry[MaxMaterials];
+            foreach (var d in MaterialTable.Decay) {
+                decayLut[(int)d.Source] = new GpuDecayEntry {
+                    Result = (uint)d.Result,
+                    Probability = d.Probability,
                 };
             }
-            
-            _decayBuffer = new ComputeBuffer(Mathf.Max(1, decay.Count), Marshal.SizeOf<GpuDecayRule>());
 
-            if (decay.Count > 0) {
-                _decayBuffer.SetData(decayData);
-            }
-            
+            _decayBuffer = new ComputeBuffer(MaxMaterials, Marshal.SizeOf<GpuDecayEntry>());
+            _decayBuffer.SetData(decayLut);
             _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_DECAY, _decayBuffer);
-            _compute.SetInt(ID_DECAY_COUNT, decay.Count);
         }
 
         // --- Sim ---
