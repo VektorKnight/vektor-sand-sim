@@ -275,6 +275,7 @@ MonoBehaviour:
   _frameRateCap: 1
   _compute: {fileID: 7200000, guid: 729394d490e7540cba9d9ce75f2b9c43, type: 3}
   _tempVis: {fileID: 677317741}
+  _premultShader: {fileID: 4800000, guid: 7f17615d7f39545c4b02f489ad0e1cb8, type: 3}
   _lighting: {fileID: 263843366}
 --- !u!4 &263843365
 Transform:
@@ -305,14 +306,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: Assembly-CSharp::FallingSand.SandLightingController
   _compute: {fileID: 7200000, guid: 1290b8069b2f54e598ebc97a242cea03, type: 3}
   _lightAngle: 60
-  _lightColor: {r: 1, g: 1, b: 1, a: 1}
+  _lightColor: {r: 1, g: 0.9633208, b: 0.9481132, a: 1}
   _lightIntensity: 3
-  _ambientColor: {r: 0.42893377, g: 0.49096096, b: 0.5943396, a: 1}
+  _ambientColor: {r: 0.46457815, g: 0.54445434, b: 0.6792453, a: 1}
   _lightMaxSteps: 1024
-  _lightDownscale: 4
+  _lightDownscale: 3
   _lightBlurPasses: 3
   _lightEnabled: 1
-  _emissionMaxSteps: 192
+  _emissionMaxSteps: 96
+  _bloomEnabled: 1
+  _bloomIntensity: 0.2
+  _bloomSteps: 8
+  _bloomBlurPasses: 1
 --- !u!1 &677317740
 GameObject:
   m_ObjectHideFlags: 0

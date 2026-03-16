@@ -17,6 +17,10 @@ int _LightDownscale;
 int _LightEnabled;
 int _EmissionMaxSteps;
 
+// Bloom params.
+float _BloomIntensity;
+int _BloomSteps;
+
 // Cursor params for visualization.
 int _CursorX;
 int _CursorY;
@@ -41,6 +45,11 @@ RWTexture2D<float4> _VisTexture;
 // Sampled with bilinear filtering in Visualize.
 Texture2D<float4> _LightTextureRead;
 SamplerState sampler_LightTextureRead;
+
+// Bloom buffer (independent from light buffer).
+RWTexture2D<float4> _BloomTexture;
+Texture2D<float4> _BloomTextureRead;
+SamplerState sampler_BloomTextureRead;
 
 // Shared helpers that depend on sim buffers.
 int to_flat(int2 i) {
@@ -104,3 +113,8 @@ float3 march_dda(int2 start, int2 light_dir, float3 light_color, float3 ambient_
 
 // 5-tap Gaussian weights (sigma ~1.4).
 static const float _BlurWeights[5] = { 0.06136, 0.24477, 0.38774, 0.24477, 0.06136 };
+
+// Reinhard per-channel tonemap for bloom.
+float3 tonemap_bloom(float3 c) {
+    return c / (1.0 + c);
+}

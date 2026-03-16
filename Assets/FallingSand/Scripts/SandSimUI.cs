@@ -21,10 +21,11 @@ namespace FallingSand.Scripts {
         private bool _settingsOpen;
 
         // Color slider refs for live update.
-        private Toggle _lightToggle;
+        private Toggle _lightToggle, _bloomToggle;
         private Slider _lightAngleSlider, _lightIntensitySlider;
         private Slider _lightRSlider, _lightGSlider, _lightBSlider;
         private Slider _ambientRSlider, _ambientGSlider, _ambientBSlider;
+        private Dropdown _lightQualityDropdown;
 
         private void Start() {
             // Disable raycastTarget on all pre-existing RawImages (background, sim view)
@@ -168,6 +169,16 @@ namespace FallingSand.Scripts {
 
             // Lighting toggle.
             _lightToggle = CreateToggle(_settingsPanel.transform, "Lighting", _sim.Lighting.LightEnabled, v => { _sim.Lighting.LightEnabled = v; SaveSettings(); });
+            _bloomToggle = CreateToggle(_settingsPanel.transform, "Bloom", _sim.Lighting.BloomEnabled, v => { _sim.Lighting.BloomEnabled = v; SaveSettings(); });
+
+            // Light Quality: Low=4, Medium=3, High=2.
+            var qualityOptions = new[] { "Low", "Medium", "High" };
+            var currentQuality = _sim.Lighting.LightDownscale switch { 4 => 0, 3 => 1, _ => 2 };
+            _lightQualityDropdown = CreateDropdown(_settingsPanel.transform, "Light Quality", qualityOptions, currentQuality, idx => {
+                _sim.Lighting.LightDownscale = idx switch { 0 => 4, 1 => 3, _ => 2 };
+                _sim.RecreateLightTextures();
+                SaveSettings();
+            });
 
             // Light Angle.
             _lightAngleSlider = CreateSlider(_settingsPanel.transform, "Light Angle", 0f, 360f, _sim.Lighting.LightAngle, v => { _sim.Lighting.LightAngle = v; SaveSettings(); });
@@ -248,6 +259,7 @@ namespace FallingSand.Scripts {
             _sim.Lighting.ResetToDefaults();
 
             _lightToggle.isOn = _sim.Lighting.LightEnabled;
+            _bloomToggle.isOn = _sim.Lighting.BloomEnabled;
             _lightAngleSlider.value = _sim.Lighting.LightAngle;
             _lightIntensitySlider.value = _sim.Lighting.LightIntensity;
 
@@ -260,6 +272,9 @@ namespace FallingSand.Scripts {
             _ambientRSlider.value = ac.r;
             _ambientGSlider.value = ac.g;
             _ambientBSlider.value = ac.b;
+
+            _lightQualityDropdown.value = _sim.Lighting.LightDownscale switch { 4 => 0, 3 => 1, _ => 2 };
+            _sim.RecreateLightTextures();
 
             SaveSettings();
         }
@@ -294,6 +309,8 @@ namespace FallingSand.Scripts {
             if (!PlayerPrefs.HasKey(PK + "saved")) return;
 
             _sim.Lighting.LightEnabled = PlayerPrefs.GetInt(PK + "lightEnabled", 1) != 0;
+            _sim.Lighting.BloomEnabled = PlayerPrefs.GetInt(PK + "bloomEnabled", 1) != 0;
+            _sim.Lighting.LightDownscale = PlayerPrefs.GetInt(PK + "lightDownscale", 3);
             _sim.Lighting.LightAngle = PlayerPrefs.GetFloat(PK + "lightAngle", 60f);
             _sim.Lighting.LightIntensity = PlayerPrefs.GetFloat(PK + "lightIntensity", 2f);
             _sim.Lighting.LightColor = new Color(
@@ -315,6 +332,8 @@ namespace FallingSand.Scripts {
             if (!ShouldPersist()) return;
             PlayerPrefs.SetInt(PK + "saved", 1);
             PlayerPrefs.SetInt(PK + "lightEnabled", _sim.Lighting.LightEnabled ? 1 : 0);
+            PlayerPrefs.SetInt(PK + "bloomEnabled", _sim.Lighting.BloomEnabled ? 1 : 0);
+            PlayerPrefs.SetInt(PK + "lightDownscale", _sim.Lighting.LightDownscale);
             PlayerPrefs.SetFloat(PK + "lightAngle", _sim.Lighting.LightAngle);
             PlayerPrefs.SetFloat(PK + "lightIntensity", _sim.Lighting.LightIntensity);
             var lc = _sim.Lighting.LightColor;
@@ -503,7 +522,7 @@ namespace FallingSand.Scripts {
             return slider;
         }
 
-        private static void CreateDropdown(Transform parent, string label, string[] options, int value, Action<int> onChange) {
+        private static Dropdown CreateDropdown(Transform parent, string label, string[] options, int value, Action<int> onChange) {
             var row = new GameObject(label + "Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
             row.transform.SetParent(parent, false);
             var hlg = row.GetComponent<HorizontalLayoutGroup>();
@@ -616,6 +635,7 @@ namespace FallingSand.Scripts {
             dd.RefreshShownValue();
 
             dd.onValueChanged.AddListener(idx => onChange(idx));
+            return dd;
         }
 
         private static Text CreateText(Transform parent, string content, int fontSize, TextAnchor alignment) {

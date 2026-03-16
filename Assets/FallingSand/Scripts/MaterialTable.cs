@@ -223,7 +223,7 @@ namespace FallingSand.Scripts {
             // Organic
             new() {
                 Name = "Algae", Description = "Grows on water. Decays into sludge.",
-                Fluidity = 1, Density = 60, Weight = 64, Drag = 192,
+                Fluidity = 2, Density = 60, Weight = 64, Drag = 192,
                 Variation = 0.4f, Opacity = 0.05f,
                 Color = new Color(0.15f, 0.45f, 0.1f),
             },
@@ -240,6 +240,7 @@ namespace FallingSand.Scripts {
         // --- Reactions ---
         
         // Source -> Trigger -> Result (with some probability determining rate)
+        // TODO: Investigate if indexing this on the GPU-side is a potential bottleneck.
         private static readonly List<ReactionRule> _reactions = new() {
             // Stone
             new(MaterialId.Stone, MaterialId.Acid,   MaterialId.Empty, 0.03f),

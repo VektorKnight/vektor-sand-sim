@@ -47,6 +47,7 @@ namespace FallingSand.Scripts {
 
         [Header("Visualization")]
         [SerializeField] private RawImage _tempVis;
+        [SerializeField] private Shader _premultShader;
         [SerializeField] private SandLightingController _lighting;
 
         // GPU-side interaction structs. Must match SandUtil.hlsl layout.
@@ -69,6 +70,8 @@ namespace FallingSand.Scripts {
         private int _selectedIndex = 1;
         private bool _paintReplace;
         private Vector2Int _lastPaintPos;
+        private Vector2Int _lineOrigin;
+        private int _lineAxis; // -1 = undecided, 0 = horizontal, 1 = vertical, 2 = diagonal
         private bool _wasPainting;
 
         // FPS and sim timing.
@@ -88,9 +91,11 @@ namespace FallingSand.Scripts {
         private RenderTexture _visTexture;
         private RenderTexture _lightTexture;
         private RenderTexture _lightTextureTemp;
+        private Material _premultMaterial;
 
         // Deferred recreation flag.
         private bool _pendingRecreate;
+
 
         // Kernel handles.
         private int KERNEL_PAINT;
@@ -161,6 +166,32 @@ namespace FallingSand.Scripts {
             set { _windowScale = Mathf.Clamp(value, 1, 3); _pendingRecreate = true; }
         }
 
+        public void RecreateLightTextures() {
+            if (_lightTexture) Destroy(_lightTexture);
+            if (_lightTextureTemp) Destroy(_lightTextureTemp);
+
+            var dims = GetSimDimensions();
+            var downscale = _lighting ? _lighting.LightDownscale : 2;
+            var lightW = dims.x / downscale;
+            var lightH = dims.y / downscale;
+
+            _lightTexture = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
+                enableRandomWrite = true,
+                filterMode = FilterMode.Bilinear,
+                useMipMap = false
+            };
+            
+            _lightTexture.Create();
+
+            _lightTextureTemp = new RenderTexture(lightW, lightH, 0, RenderTextureFormat.ARGBHalf) {
+                enableRandomWrite = true,
+                filterMode = FilterMode.Bilinear,
+                useMipMap = false
+            };
+            
+            _lightTextureTemp.Create();
+        }
+
         // --- Resolution ---
 
         private Vector2Int GetSimDimensions() => _simResolution switch {
@@ -224,6 +255,7 @@ namespace FallingSand.Scripts {
             _lightTextureTemp.Create();
 
             Screen.SetResolution(simWidth * _windowScale, simHeight * _windowScale, FullScreenMode.Windowed);
+            
             _simFrame = 0;
             _stepOffset = 0;
             _prepareFrameAccum = 1f / 60f;
@@ -256,6 +288,10 @@ namespace FallingSand.Scripts {
             ApplyFrameRateCap();
 
             _tempVis.raycastTarget = false;
+            if (_premultShader) {
+                _premultMaterial = new Material(_premultShader);
+                _tempVis.material = _premultMaterial;
+            }
         }
 
         private void OnDisable() {
@@ -267,6 +303,7 @@ namespace FallingSand.Scripts {
             if (_visTexture)        Destroy(_visTexture);
             if (_lightTexture)      Destroy(_lightTexture);
             if (_lightTextureTemp)  Destroy(_lightTextureTemp);
+            if (_premultMaterial)   Destroy(_premultMaterial);
 
             _simData = null;
             _materialBuffer = null;
@@ -275,6 +312,7 @@ namespace FallingSand.Scripts {
             _visTexture = null;
             _lightTexture = null;
             _lightTextureTemp = null;
+            _premultMaterial = null;
         }
 
         private void Update() {
@@ -292,9 +330,13 @@ namespace FallingSand.Scripts {
             // Screenshot.
             if (Input.GetKeyDown(KeyCode.F12)) {
                 var dir = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "Screenshots");
+                
                 System.IO.Directory.CreateDirectory(dir);
+                
                 var path = System.IO.Path.Combine(dir, $"sand_{System.DateTime.Now:yyyyMMdd_HHmmss}.png");
+                
                 ScreenCapture.CaptureScreenshot(path);
+                
                 Debug.Log($"Screenshot saved: {path}");
             }
 
@@ -334,6 +376,14 @@ namespace FallingSand.Scripts {
                     );
                     var mat = erasing ? 0 : _selectedIndex;
 
+                    if (!_wasPainting) {
+                        _lineOrigin = pos;
+                        _lineAxis = -1;
+                    }
+
+                    var shiftHeld = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+                    if (shiftHeld) pos = SnapToLine(_lineOrigin, pos, ref _lineAxis);
+
                     if (_wasPainting) {
                         PaintLine(_lastPaintPos, pos, _paintRadius, mat);
                     } else {
@@ -353,6 +403,7 @@ namespace FallingSand.Scripts {
                 RecreateSimulation();
             }
 
+            // Compute effective steps to maintain consistent behavior at frame-rates other than 60.
             _effectiveSteps = Mathf.Clamp(
                 Mathf.RoundToInt(_baseSimSteps * 60f * Time.unscaledDeltaTime),
                 1, _baseSimSteps
@@ -366,6 +417,7 @@ namespace FallingSand.Scripts {
             _compute.SetInt(ID_SIM_FRAME, _simFrame);
             _compute.SetInt(ID_GRAVITY, _gravity);
 
+            // We need to scale when PrepareFrame is run based on the FPS as well.
             _prepareFrameAccum += Time.unscaledDeltaTime;
             if (_prepareFrameAccum >= 1f / 60f) {
                 _prepareFrameAccum -= 1f / 60f;
@@ -373,6 +425,7 @@ namespace FallingSand.Scripts {
                 PrepareFrame();
             }
 
+            // Step the simulation with the 4-color tiling pattern.
             for (var i = 0; i < _effectiveSteps; i++) {
                 var offset = (_simFrame * _effectiveSteps + i) & 3;
                 for (var p = 0; p < 4; p++)
@@ -398,6 +451,29 @@ namespace FallingSand.Scripts {
         }
 
         // --- Paint ---
+
+        private static Vector2Int SnapToLine(Vector2Int origin, Vector2Int pos, ref int axis) {
+            var dx = pos.x - origin.x;
+            var dy = pos.y - origin.y;
+            var ax = Mathf.Abs(dx);
+            var ay = Mathf.Abs(dy);
+
+            // Lock axis once cursor moves far enough from origin.
+            if (axis < 0 && ax + ay > 5) {
+                if (ax > 2 * ay) axis = 0;
+                else if (ay > 2 * ax) axis = 1;
+                else axis = 2;
+            }
+
+            return axis switch {
+                0 => new Vector2Int(pos.x, origin.y),
+                1 => new Vector2Int(origin.x, pos.y),
+                2 => new Vector2Int(
+                    origin.x + Mathf.Max(ax, ay) * (int)Mathf.Sign(dx),
+                    origin.y + Mathf.Max(ax, ay) * (int)Mathf.Sign(dy)),
+                _ => pos
+            };
+        }
 
         private void PaintLine(Vector2Int from, Vector2Int to, int r, int mat) {
             var dx = to.x - from.x;
@@ -434,7 +510,9 @@ namespace FallingSand.Scripts {
         // --- Upload ---
 
         private void UploadMaterials() {
-            if (_materialBuffer != null && _materialBuffer.IsValid()) _materialBuffer.Release();
+            if (_materialBuffer != null && _materialBuffer.IsValid()) {
+                _materialBuffer.Release();
+            }
 
             var mats = MaterialTable.Materials;
             var stride = Marshal.SizeOf<GpuMaterialDefinition>();
@@ -453,7 +531,9 @@ namespace FallingSand.Scripts {
             _lighting.BindMaterials(_materialBuffer);
 
             // Upload reaction table.
-            if (_reactionBuffer != null && _reactionBuffer.IsValid()) _reactionBuffer.Release();
+            if (_reactionBuffer != null && _reactionBuffer.IsValid()) {
+                _reactionBuffer.Release();
+            }
             
             var reactions = MaterialTable.Reactions;
             var reactionData = new GpuReactionRule[reactions.Count];
@@ -467,14 +547,18 @@ namespace FallingSand.Scripts {
             }
             
             _reactionBuffer = new ComputeBuffer(Mathf.Max(1, reactions.Count), Marshal.SizeOf<GpuReactionRule>());
-            
-            if (reactions.Count > 0) _reactionBuffer.SetData(reactionData);
+
+            if (reactions.Count > 0) {
+                _reactionBuffer.SetData(reactionData);
+            }
             
             _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_REACTIONS, _reactionBuffer);
             _compute.SetInt(ID_REACTION_COUNT, reactions.Count);
 
             // Upload decay table.
-            if (_decayBuffer != null && _decayBuffer.IsValid()) _decayBuffer.Release();
+            if (_decayBuffer != null && _decayBuffer.IsValid()) {
+                _decayBuffer.Release();
+            }
             
             var decay = MaterialTable.Decay;
             var decayData = new GpuDecayRule[decay.Count];
@@ -487,8 +571,10 @@ namespace FallingSand.Scripts {
             }
             
             _decayBuffer = new ComputeBuffer(Mathf.Max(1, decay.Count), Marshal.SizeOf<GpuDecayRule>());
-            
-            if (decay.Count > 0) _decayBuffer.SetData(decayData);
+
+            if (decay.Count > 0) {
+                _decayBuffer.SetData(decayData);
+            }
             
             _compute.SetBuffer(KERNEL_PREPARE_FRAME, ID_DECAY, _decayBuffer);
             _compute.SetInt(ID_DECAY_COUNT, decay.Count);
