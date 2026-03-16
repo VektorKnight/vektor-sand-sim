@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.EventSystems;
 using UnityEngine.UI;
 
 namespace FallingSand.Scripts {
@@ -14,6 +15,7 @@ namespace FallingSand.Scripts {
         [SerializeField] private SandSimulation _sim;
 
         private Text _hudText;
+        private Text _tooltipText;
         private readonly List<Outline> _matOutlines = new();
         private GameObject _settingsPanel;
         private bool _settingsOpen;
@@ -52,6 +54,8 @@ namespace FallingSand.Scripts {
 
         // ---- Material bar ----
 
+        private const int MaterialsPerRow = 10;
+
         private void BuildMaterialBar() {
             var panel = CreatePanel(transform, "MaterialBar", new Color(0, 0, 0, 0.5f));
             var rt = panel.GetComponent<RectTransform>();
@@ -60,12 +64,13 @@ namespace FallingSand.Scripts {
             rt.pivot = new Vector2(0.5f, 0f);
             rt.anchoredPosition = new Vector2(0, 8);
 
-            var hlg = panel.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 2;
-            hlg.padding = new RectOffset(4, 4, 4, 4);
-            hlg.childAlignment = TextAnchor.MiddleCenter;
-            hlg.childForceExpandWidth = false;
-            hlg.childForceExpandHeight = false;
+            var grid = panel.AddComponent<GridLayoutGroup>();
+            grid.cellSize = new Vector2(56, 24);
+            grid.spacing = new Vector2(2, 2);
+            grid.padding = new RectOffset(4, 4, 4, 4);
+            grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
+            grid.constraintCount = MaterialsPerRow;
+            grid.childAlignment = TextAnchor.MiddleCenter;
 
             var csf = panel.AddComponent<ContentSizeFitter>();
             csf.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
@@ -74,16 +79,23 @@ namespace FallingSand.Scripts {
             var mats = _sim.Materials;
             for (var i = 1; i < mats.Count; i++) {
                 var idx = i;
+                var desc = mats[i].Description;
                 var btn = CreateButton(panel.transform, mats[i].Color, new Vector2(56, 24), () => {
                     _sim.SelectedMaterialIndex = idx;
                     SaveSettings();
                 });
 
-                var btnLE = btn.gameObject.AddComponent<LayoutElement>();
-                btnLE.preferredWidth = 56;
-                btnLE.preferredHeight = 24;
+                // Hover tooltip.
+                if (!string.IsNullOrEmpty(desc)) {
+                    var trigger = btn.gameObject.AddComponent<EventTrigger>();
+                    var enterEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
+                    enterEntry.callback.AddListener(_ => { if (_tooltipText) _tooltipText.text = desc; });
+                    trigger.triggers.Add(enterEntry);
+                    var exitEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
+                    exitEntry.callback.AddListener(_ => { if (_tooltipText) _tooltipText.text = ""; });
+                    trigger.triggers.Add(exitEntry);
+                }
 
-                // Material name label centered on the button.
                 var label = CreateText(btn.transform, mats[i].Name, 10, TextAnchor.MiddleCenter);
                 label.raycastTarget = false;
                 label.color = GetLabelColor(mats[i].Color);
@@ -99,6 +111,18 @@ namespace FallingSand.Scripts {
                 outline.enabled = false;
                 _matOutlines.Add(outline);
             }
+
+            // Tooltip text sits just above the material bar.
+            _tooltipText = CreateText(transform, "", 11, TextAnchor.MiddleCenter);
+            _tooltipText.raycastTarget = false;
+            var tooltipRT = _tooltipText.GetComponent<RectTransform>();
+            tooltipRT.anchorMin = new Vector2(0.5f, 0f);
+            tooltipRT.anchorMax = new Vector2(0.5f, 0f);
+            tooltipRT.pivot = new Vector2(0.5f, 0f);
+            // Two rows + padding + gap.
+            var barHeight = Mathf.CeilToInt((float)(mats.Count - 1) / MaterialsPerRow) * 26 + 8;
+            tooltipRT.anchoredPosition = new Vector2(0, 8 + barHeight + 4);
+            tooltipRT.sizeDelta = new Vector2(400, 20);
         }
 
         // ---- Settings panel ----
@@ -195,7 +219,7 @@ namespace FallingSand.Scripts {
         // ---- HUD ----
 
         private void BuildHUD() {
-            _hudText = CreateText(transform, "", 13, TextAnchor.UpperLeft);
+            _hudText = CreateText(transform, "", 10, TextAnchor.UpperLeft);
             var rt = _hudText.GetComponent<RectTransform>();
             rt.anchorMin = new Vector2(0f, 1f);
             rt.anchorMax = new Vector2(0f, 1f);

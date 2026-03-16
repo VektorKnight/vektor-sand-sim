@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.Profiling;
@@ -19,6 +20,7 @@ namespace FallingSand.Scripts {
     ///   Scroll wheel      – change brush radius
     ///   Shift + scroll    – cycle material
     ///   Insert            – toggle replacement paint mode
+    ///   F12               – save screenshot
     /// </summary>
     public class SandSimulation : MonoBehaviour {
         // Fix for windows to maintain proper resolution on high DPI.
@@ -185,9 +187,11 @@ namespace FallingSand.Scripts {
             var simHeight = dims.y;
 
             _simData = new ComputeBuffer(simWidth * simHeight, sizeof(int));
-            
+
             // DX12/VK do not zero new buffers.
-            _simData.SetData(new int[simWidth * simHeight]);
+            var zeroed = new NativeArray<int>(simWidth * simHeight, Allocator.Temp, NativeArrayOptions.ClearMemory);
+            _simData.SetData(zeroed);
+            zeroed.Dispose();
 
             _visTexture = new RenderTexture(simWidth, simHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) {
                 enableRandomWrite = true,
@@ -254,15 +258,23 @@ namespace FallingSand.Scripts {
             _tempVis.raycastTarget = false;
         }
 
-        private void OnDestroy() {
+        private void OnDisable() {
             if (_simData != null && _simData.IsValid())                 _simData.Release();
             if (_materialBuffer != null && _materialBuffer.IsValid())   _materialBuffer.Release();
             if (_reactionBuffer != null && _reactionBuffer.IsValid())   _reactionBuffer.Release();
             if (_decayBuffer != null && _decayBuffer.IsValid())         _decayBuffer.Release();
-            
+
             if (_visTexture)        Destroy(_visTexture);
             if (_lightTexture)      Destroy(_lightTexture);
             if (_lightTextureTemp)  Destroy(_lightTextureTemp);
+
+            _simData = null;
+            _materialBuffer = null;
+            _reactionBuffer = null;
+            _decayBuffer = null;
+            _visTexture = null;
+            _lightTexture = null;
+            _lightTextureTemp = null;
         }
 
         private void Update() {
@@ -275,6 +287,15 @@ namespace FallingSand.Scripts {
                 _fpsDisplay = _fpsCounter;
                 _fpsCounter = 0;
                 _fpsTimer -= 1f;
+            }
+
+            // Screenshot.
+            if (Input.GetKeyDown(KeyCode.F12)) {
+                var dir = System.IO.Path.Combine(System.IO.Directory.GetCurrentDirectory(), "Screenshots");
+                System.IO.Directory.CreateDirectory(dir);
+                var path = System.IO.Path.Combine(dir, $"sand_{System.DateTime.Now:yyyyMMdd_HHmmss}.png");
+                ScreenCapture.CaptureScreenshot(path);
+                Debug.Log($"Screenshot saved: {path}");
             }
 
             // Guard UI input.

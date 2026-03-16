@@ -8,6 +8,7 @@ namespace FallingSand.Scripts {
     [Serializable]
     public class MaterialDefinition {
         public string Name = "Material";
+        public string Description = "";
 
         /// <summary>
         /// Solids are zero, anything greater is a progressively less viscous fluid / gas.

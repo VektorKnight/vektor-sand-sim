@@ -152,7 +152,6 @@ RectTransform:
   m_ConstrainProportionsScale: 0
   m_Children:
   - {fileID: 1313096509}
-  - {fileID: 677317743}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
@@ -273,7 +272,7 @@ MonoBehaviour:
   _simResolution: 1
   _windowScale: 1
   _baseSimSteps: 128
-  _frameRateCap: 0
+  _frameRateCap: 1
   _compute: {fileID: 7200000, guid: 729394d490e7540cba9d9ce75f2b9c43, type: 3}
   _tempVis: {fileID: 677317741}
   _lighting: {fileID: 263843366}
@@ -308,9 +307,9 @@ MonoBehaviour:
   _lightAngle: 60
   _lightColor: {r: 1, g: 1, b: 1, a: 1}
   _lightIntensity: 2.25
-  _ambientColor: {r: 0.1, g: 0.1, b: 0.1, a: 1}
+  _ambientColor: {r: 0.45546874, g: 0.48984373, b: 0.55, a: 1}
   _lightMaxSteps: 1024
-  _lightDownscale: 2
+  _lightDownscale: 4
   _lightBlurPasses: 3
   _lightEnabled: 1
   _emissionMaxSteps: 128
@@ -374,12 +373,12 @@ RectTransform:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 677317740}
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalRotation: {x: -0, y: -0, z: -0, w: 1}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
   m_Children: []
-  m_Father: {fileID: 74065005}
+  m_Father: {fileID: 1313096509}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
   m_AnchorMax: {x: 1, y: 1}
@@ -631,7 +630,8 @@ RectTransform:
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 1, y: 1, z: 1}
   m_ConstrainProportionsScale: 0
-  m_Children: []
+  m_Children:
+  - {fileID: 677317743}
   m_Father: {fileID: 74065005}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0, y: 0}
@@ -652,7 +652,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: UnityEngine.UI::UnityEngine.UI.RawImage
   m_Material: {fileID: 0}
-  m_Color: {r: 0.06, g: 0.06, b: 0.06, a: 1}
+  m_Color: {r: 0.07, g: 0.07, b: 0.07, a: 1}
   m_RaycastTarget: 1
   m_RaycastPadding: {x: 0, y: 0, z: 0, w: 0}
   m_Maskable: 1

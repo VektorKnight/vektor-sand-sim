@@ -157,5 +157,5 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
     // Self-illumination added after lighting so emissive materials glow.
     base_color += mat.emission.rgb;
 
-    _VisTexture[id.xy] = float4(base_color, 1);
+    _VisTexture[id.xy] = float4(base_color, mat.color.a);
 }
