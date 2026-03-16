@@ -235,6 +235,15 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FallingSand.SandSimUI
   _sim: {fileID: 263843364}
+  _fontSize: 11
+  _hudFontSize: 10
+  _matCellSize: {x: 56, y: 24}
+  _matColumnsPerRow: 20
+  _settingsPanelWidth: 260
+  _settingsLabelWidth: 100
+  _settingsRowHeight: 22
+  _settingsPadding: 8
+  _settingsSpacing: 4
 --- !u!1 &263843363
 GameObject:
   m_ObjectHideFlags: 0

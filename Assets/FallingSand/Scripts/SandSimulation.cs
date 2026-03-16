@@ -7,7 +7,7 @@ using UnityEngine.Profiling;
 using UnityEngine.UI;
 
 namespace FallingSand.Scripts {
-    public enum SimResolution { Res960x540, Res1280x720, Res1600x900, Res1920x1080, Res2560x1440 }
+    public enum SimResolution { Res960x600, Res1280x800, Res1600x1000, Res1920x1200, Res2560x1600 }
     public enum FrameRateCap { VSync, Cap60 }
 
     /// <summary>
@@ -42,7 +42,7 @@ namespace FallingSand.Scripts {
 
         [Header("Simulation")]
         [SerializeField] private int _gravity = 16;
-        [SerializeField] private SimResolution _simResolution = SimResolution.Res1920x1080;
+        [SerializeField] private SimResolution _simResolution = SimResolution.Res1600x1000;
         [SerializeField] [Range(1, 3)] private int _windowScale = 1;
         [SerializeField] private int _baseSimSteps = 256;
         [SerializeField] private FrameRateCap _frameRateCap = FrameRateCap.VSync;
@@ -193,12 +193,12 @@ namespace FallingSand.Scripts {
         // --- Resolution ---
 
         private Vector2Int GetSimDimensions() => _simResolution switch {
-            SimResolution.Res960x540   => new(960, 540),
-            SimResolution.Res1280x720  => new(1280, 720),
-            SimResolution.Res1600x900  => new(1600, 900),
-            SimResolution.Res1920x1080 => new(1920, 1080),
-            SimResolution.Res2560x1440 => new(2560, 1440),
-            _ => new(1920, 1080)
+            SimResolution.Res960x600   => new(960, 600),
+            SimResolution.Res1280x800  => new(1280, 800),
+            SimResolution.Res1600x1000 => new(1600, 1000),
+            SimResolution.Res1920x1200 => new(1920, 1200),
+            SimResolution.Res2560x1600 => new(2560, 1600),
+            _ => new(1600, 1000)
         };
 
         public void RecreateSimulation() {

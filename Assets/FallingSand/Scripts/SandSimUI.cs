@@ -14,6 +14,17 @@ namespace FallingSand.Scripts {
     public class SandSimUI : MonoBehaviour {
         [SerializeField] private SandSimulation _sim;
 
+        [Header("Layout")]
+        [SerializeField] private int _fontSize = 11;
+        [SerializeField] private int _hudFontSize = 10;
+        [SerializeField] private Vector2 _matCellSize = new(56, 24);
+        [SerializeField] private int _matColumnsPerRow = 10;
+        [SerializeField] private float _settingsPanelWidth = 260f;
+        [SerializeField] private float _settingsLabelWidth = 100f;
+        [SerializeField] private float _settingsRowHeight = 22f;
+        [SerializeField] private int _settingsPadding = 8;
+        [SerializeField] private int _settingsSpacing = 4;
+
         private Text _hudText;
         private Text _tooltipText;
         private readonly List<Outline> _matOutlines = new();
@@ -57,7 +68,7 @@ namespace FallingSand.Scripts {
 
         // ---- Material bar ----
 
-        private const int MaterialsPerRow = 10;
+        private int MaterialsPerRow => _matColumnsPerRow;
 
         private void BuildMaterialBar() {
             var panel = CreatePanel(transform, "MaterialBar", new Color(0, 0, 0, 0.5f));
@@ -68,7 +79,7 @@ namespace FallingSand.Scripts {
             rt.anchoredPosition = new Vector2(0, 8);
 
             var grid = panel.AddComponent<GridLayoutGroup>();
-            grid.cellSize = new Vector2(56, 24);
+            grid.cellSize = _matCellSize;
             grid.spacing = new Vector2(2, 2);
             grid.padding = new RectOffset(4, 4, 4, 4);
             grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
@@ -83,7 +94,7 @@ namespace FallingSand.Scripts {
             for (var i = 1; i < mats.Count; i++) {
                 var idx = i;
                 var desc = mats[i].Description;
-                var btn = CreateButton(panel.transform, mats[i].Color, new Vector2(56, 24), () => {
+                var btn = CreateButton(panel.transform, mats[i].Color, _matCellSize, () => {
                     _sim.SelectedMaterialIndex = idx;
                     SaveSettings();
                 });
@@ -99,7 +110,7 @@ namespace FallingSand.Scripts {
                     trigger.triggers.Add(exitEntry);
                 }
 
-                var label = CreateText(btn.transform, mats[i].Name, 10, TextAnchor.MiddleCenter);
+                var label = CreateText(btn.transform, mats[i].Name, _fontSize - 1, TextAnchor.MiddleCenter);
                 label.raycastTarget = false;
                 label.color = GetLabelColor(mats[i].Color);
                 var labelRT = label.GetComponent<RectTransform>();
@@ -116,14 +127,14 @@ namespace FallingSand.Scripts {
             }
 
             // Tooltip text sits just above the material bar.
-            _tooltipText = CreateText(transform, "", 11, TextAnchor.MiddleCenter);
+            _tooltipText = CreateText(transform, "", _fontSize, TextAnchor.MiddleCenter);
             _tooltipText.raycastTarget = false;
             var tooltipRT = _tooltipText.GetComponent<RectTransform>();
             tooltipRT.anchorMin = new Vector2(0.5f, 0f);
             tooltipRT.anchorMax = new Vector2(0.5f, 0f);
             tooltipRT.pivot = new Vector2(0.5f, 0f);
             // Two rows + padding + gap.
-            var barHeight = Mathf.CeilToInt((float)(mats.Count - 1) / MaterialsPerRow) * 26 + 8;
+            var barHeight = Mathf.CeilToInt((float)(mats.Count - 1) / MaterialsPerRow) * (int)(_matCellSize.y + 2) + 8;
             tooltipRT.anchoredPosition = new Vector2(0, 8 + barHeight + 4);
             tooltipRT.sizeDelta = new Vector2(400, 20);
         }
@@ -141,7 +152,7 @@ namespace FallingSand.Scripts {
             toggleRT.anchorMax = new Vector2(1f, 1f);
             toggleRT.pivot = new Vector2(1f, 1f);
             toggleRT.anchoredPosition = new Vector2(-8, -8);
-            var toggleText = CreateText(toggleBtn.transform, "Settings", 12, TextAnchor.MiddleCenter);
+            var toggleText = CreateText(toggleBtn.transform, "Settings", _fontSize + 1, TextAnchor.MiddleCenter);
             var toggleTextRT = toggleText.GetComponent<RectTransform>();
             toggleTextRT.anchorMin = Vector2.zero;
             toggleTextRT.anchorMax = Vector2.one;
@@ -155,11 +166,11 @@ namespace FallingSand.Scripts {
             panelRT.anchorMax = new Vector2(1f, 1f);
             panelRT.pivot = new Vector2(1f, 1f);
             panelRT.anchoredPosition = new Vector2(-8, -44);
-            panelRT.sizeDelta = new Vector2(260, 0);
+            panelRT.sizeDelta = new Vector2(_settingsPanelWidth, 0);
 
             var vlg = _settingsPanel.AddComponent<VerticalLayoutGroup>();
-            vlg.spacing = 4;
-            vlg.padding = new RectOffset(8, 8, 8, 8);
+            vlg.spacing = _settingsSpacing;
+            vlg.padding = new RectOffset(_settingsPadding, _settingsPadding, _settingsPadding, _settingsPadding);
             vlg.childAlignment = TextAnchor.UpperLeft;
             vlg.childForceExpandWidth = true;
             vlg.childForceExpandHeight = false;
@@ -187,25 +198,25 @@ namespace FallingSand.Scripts {
             _lightIntensitySlider = CreateSlider(_settingsPanel.transform, "Light Intensity", 0f, 5f, _sim.Lighting.LightIntensity, v => { _sim.Lighting.LightIntensity = v; SaveSettings(); });
 
             // Light Color (RGB).
-            CreateText(_settingsPanel.transform, "Light Color", 11, TextAnchor.MiddleLeft);
+            CreateText(_settingsPanel.transform, "Light Color", _fontSize, TextAnchor.MiddleLeft);
             var lc = _sim.Lighting.LightColor;
             _lightRSlider = CreateSlider(_settingsPanel.transform, "  R", 0f, 1f, lc.r, _ => { ApplyLightColor(); SaveSettings(); });
             _lightGSlider = CreateSlider(_settingsPanel.transform, "  G", 0f, 1f, lc.g, _ => { ApplyLightColor(); SaveSettings(); });
             _lightBSlider = CreateSlider(_settingsPanel.transform, "  B", 0f, 1f, lc.b, _ => { ApplyLightColor(); SaveSettings(); });
 
             // Ambient Color (RGB).
-            CreateText(_settingsPanel.transform, "Ambient Color", 11, TextAnchor.MiddleLeft);
+            CreateText(_settingsPanel.transform, "Ambient Color", _fontSize, TextAnchor.MiddleLeft);
             var ac = _sim.Lighting.AmbientColor;
             _ambientRSlider = CreateSlider(_settingsPanel.transform, "  R", 0f, 1f, ac.r, _ => { ApplyAmbientColor(); SaveSettings(); });
             _ambientGSlider = CreateSlider(_settingsPanel.transform, "  G", 0f, 1f, ac.g, _ => { ApplyAmbientColor(); SaveSettings(); });
             _ambientBSlider = CreateSlider(_settingsPanel.transform, "  B", 0f, 1f, ac.b, _ => { ApplyAmbientColor(); SaveSettings(); });
 
             // Reset lighting to defaults.
-            var resetBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, 24), ResetLighting);
+            var resetBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, _settingsRowHeight), ResetLighting);
             var resetLE = resetBtn.gameObject.AddComponent<LayoutElement>();
-            resetLE.preferredHeight = 24;
+            resetLE.preferredHeight = _settingsRowHeight;
             resetLE.flexibleWidth = 1;
-            var resetLabel = CreateText(resetBtn.transform, "Reset Lighting", 11, TextAnchor.MiddleCenter);
+            var resetLabel = CreateText(resetBtn.transform, "Reset Lighting", _fontSize, TextAnchor.MiddleCenter);
             resetLabel.raycastTarget = false;
             var resetLabelRT = resetLabel.GetComponent<RectTransform>();
             resetLabelRT.anchorMin = Vector2.zero;
@@ -215,7 +226,7 @@ namespace FallingSand.Scripts {
 
             // Resolution dropdown.
             CreateDropdown(_settingsPanel.transform, "Sim Resolution",
-                new[] { "960x540", "1280x720", "1600x900", "1920x1080", "2560x1440" },
+                new[] { "960x600", "1280x800", "1600x1000", "1920x1200", "2560x1600" },
                 (int)_sim.Resolution,
                 idx => { _sim.Resolution = (SimResolution)idx; SaveSettings(); });
 
@@ -232,11 +243,11 @@ namespace FallingSand.Scripts {
                 idx => { _sim.FrameCap = (FrameRateCap)idx; SaveSettings(); });
 
             // Clear simulation.
-            var clearBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, 24), () => _sim.RecreateSimulation());
+            var clearBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, _settingsRowHeight), () => _sim.RecreateSimulation());
             var clearLE = clearBtn.gameObject.AddComponent<LayoutElement>();
-            clearLE.preferredHeight = 24;
+            clearLE.preferredHeight = _settingsRowHeight;
             clearLE.flexibleWidth = 1;
-            var clearLabel = CreateText(clearBtn.transform, "Clear Simulation", 11, TextAnchor.MiddleCenter);
+            var clearLabel = CreateText(clearBtn.transform, "Clear Simulation", _fontSize, TextAnchor.MiddleCenter);
             clearLabel.raycastTarget = false;
             var clearLabelRT = clearLabel.GetComponent<RectTransform>();
             clearLabelRT.anchorMin = Vector2.zero;
@@ -282,7 +293,7 @@ namespace FallingSand.Scripts {
         // ---- HUD ----
 
         private void BuildHUD() {
-            _hudText = CreateText(transform, "", 10, TextAnchor.UpperLeft);
+            _hudText = CreateText(transform, "", _hudFontSize, TextAnchor.UpperLeft);
             var rt = _hudText.GetComponent<RectTransform>();
             rt.anchorMin = new Vector2(0f, 1f);
             rt.anchorMax = new Vector2(0f, 1f);
@@ -305,7 +316,7 @@ namespace FallingSand.Scripts {
             public float lightIntensity = 2f;
             public float lightR = 1f, lightG = 1f, lightB = 1f;
             public float ambientR = 0.1f, ambientG = 0.1f, ambientB = 0.1f;
-            public int resolution = (int)SimResolution.Res1920x1080;
+            public int resolution = (int)SimResolution.Res1600x1000;
             public int windowScale = 1;
             public int frameCap;
             public int paintRadius = 5;
@@ -389,25 +400,25 @@ namespace FallingSand.Scripts {
 
         // ---- Helper methods ----
 
-        private static Toggle CreateToggle(Transform parent, string label, bool value, Action<bool> onChange) {
+        private Toggle CreateToggle(Transform parent, string label, bool value, Action<bool> onChange) {
             var row = new GameObject(label + "Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
             row.transform.SetParent(parent, false);
             var hlg = row.GetComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 4;
+            hlg.spacing = _settingsSpacing;
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = false;
             hlg.childAlignment = TextAnchor.MiddleLeft;
 
             var le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = 22;
+            le.preferredHeight = _settingsRowHeight;
             le.flexibleWidth = 1;
 
             // Label.
-            var lblText = CreateText(row.transform, label, 11, TextAnchor.MiddleLeft);
+            var lblText = CreateText(row.transform, label, _fontSize, TextAnchor.MiddleLeft);
             lblText.raycastTarget = false;
             var lblLE = lblText.gameObject.AddComponent<LayoutElement>();
-            lblLE.preferredWidth = 100;
-            lblLE.minWidth = 100;
+            lblLE.preferredWidth = _settingsLabelWidth;
+            lblLE.minWidth = _settingsLabelWidth;
 
             // Checkbox.
             var toggleGO = new GameObject("Toggle", typeof(RectTransform), typeof(Toggle));
@@ -467,25 +478,25 @@ namespace FallingSand.Scripts {
             return btn;
         }
 
-        private static Slider CreateSlider(Transform parent, string label, float min, float max, float value, Action<float> onChange) {
+        private Slider CreateSlider(Transform parent, string label, float min, float max, float value, Action<float> onChange) {
             var row = new GameObject(label + "Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
             row.transform.SetParent(parent, false);
             var hlg = row.GetComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 4;
+            hlg.spacing = _settingsSpacing;
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = false;
             hlg.childAlignment = TextAnchor.MiddleLeft;
 
             var le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = 22;
+            le.preferredHeight = _settingsRowHeight;
             le.flexibleWidth = 1;
 
             // Label.
-            var lblText = CreateText(row.transform, label, 11, TextAnchor.MiddleLeft);
+            var lblText = CreateText(row.transform, label, _fontSize, TextAnchor.MiddleLeft);
             lblText.raycastTarget = false;
             var lblLE = lblText.gameObject.AddComponent<LayoutElement>();
-            lblLE.preferredWidth = 100;
-            lblLE.minWidth = 100;
+            lblLE.preferredWidth = _settingsLabelWidth;
+            lblLE.minWidth = _settingsLabelWidth;
 
             // Slider.
             var sliderGO = new GameObject("Slider", typeof(RectTransform), typeof(Slider));
@@ -550,32 +561,32 @@ namespace FallingSand.Scripts {
             return slider;
         }
 
-        private static Dropdown CreateDropdown(Transform parent, string label, string[] options, int value, Action<int> onChange) {
+        private Dropdown CreateDropdown(Transform parent, string label, string[] options, int value, Action<int> onChange) {
             var row = new GameObject(label + "Row", typeof(RectTransform), typeof(HorizontalLayoutGroup));
             row.transform.SetParent(parent, false);
             var hlg = row.GetComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 4;
+            hlg.spacing = _settingsSpacing;
             hlg.childForceExpandWidth = false;
             hlg.childForceExpandHeight = false;
             hlg.childAlignment = TextAnchor.MiddleLeft;
 
             var le = row.AddComponent<LayoutElement>();
-            le.preferredHeight = 28;
+            le.preferredHeight = _settingsRowHeight + 6;
             le.flexibleWidth = 1;
 
             // Label.
-            var lblText = CreateText(row.transform, label, 11, TextAnchor.MiddleLeft);
+            var lblText = CreateText(row.transform, label, _fontSize, TextAnchor.MiddleLeft);
             lblText.raycastTarget = false;
             var lblLE = lblText.gameObject.AddComponent<LayoutElement>();
-            lblLE.preferredWidth = 100;
-            lblLE.minWidth = 100;
+            lblLE.preferredWidth = _settingsLabelWidth;
+            lblLE.minWidth = _settingsLabelWidth;
 
             // Dropdown.
             var ddGO = new GameObject("Dropdown", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image), typeof(Dropdown));
             ddGO.transform.SetParent(row.transform, false);
             var ddLE = ddGO.AddComponent<LayoutElement>();
             ddLE.flexibleWidth = 1;
-            ddLE.preferredHeight = 24;
+            ddLE.preferredHeight = _settingsRowHeight;
 
             var ddImg = ddGO.GetComponent<Image>();
             ddImg.color = new Color(0.25f, 0.25f, 0.25f);
@@ -583,7 +594,7 @@ namespace FallingSand.Scripts {
             var dd = ddGO.GetComponent<Dropdown>();
 
             // Caption text.
-            var captionText = CreateText(ddGO.transform, "", 11, TextAnchor.MiddleLeft);
+            var captionText = CreateText(ddGO.transform, "", _fontSize, TextAnchor.MiddleLeft);
             var captionRT = captionText.GetComponent<RectTransform>();
             captionRT.anchorMin = Vector2.zero;
             captionRT.anchorMax = Vector2.one;
@@ -619,7 +630,7 @@ namespace FallingSand.Scripts {
             contentRT.anchorMax = Vector2.one;
             contentRT.pivot = new Vector2(0.5f, 1f);
             contentRT.anchoredPosition = Vector2.zero;
-            contentRT.sizeDelta = new Vector2(0, 24);
+            contentRT.sizeDelta = new Vector2(0, _settingsRowHeight);
 
             var scroll = template.GetComponent<ScrollRect>();
             scroll.content = contentRT;
@@ -632,12 +643,12 @@ namespace FallingSand.Scripts {
             var itemRT = item.GetComponent<RectTransform>();
             itemRT.anchorMin = new Vector2(0, 0.5f);
             itemRT.anchorMax = new Vector2(1, 0.5f);
-            itemRT.sizeDelta = new Vector2(0, 24);
+            itemRT.sizeDelta = new Vector2(0, _settingsRowHeight);
 
             var itemBg = item.GetComponent<Image>();
             itemBg.color = new Color(0.25f, 0.25f, 0.25f);
 
-            var itemText = CreateText(item.transform, "", 11, TextAnchor.MiddleLeft);
+            var itemText = CreateText(item.transform, "", _fontSize, TextAnchor.MiddleLeft);
             var itemTextRT = itemText.GetComponent<RectTransform>();
             itemTextRT.anchorMin = Vector2.zero;
             itemTextRT.anchorMax = Vector2.one;
