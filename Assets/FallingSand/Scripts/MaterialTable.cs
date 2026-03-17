@@ -7,7 +7,7 @@ namespace FallingSand.Scripts {
     /// Maps directly to the 5-bit material ID stored in each cell on the GPU.
     /// Mostly to make reactions and decay easier to configure.
     /// </summary>
-    public enum MaterialId {
+    public enum MatId {
         // Solids
         Empty      = 0,
         Bedrock    = 1,
@@ -47,12 +47,12 @@ namespace FallingSand.Scripts {
     /// Probability is the chance per neighboring cell per step.
     /// </summary>
     public readonly struct ReactionRule {
-        public readonly MaterialId Source;
-        public readonly MaterialId Trigger;
-        public readonly MaterialId Result;
+        public readonly MatId Source;
+        public readonly MatId Trigger;
+        public readonly MatId Result;
         public readonly float Probability;
 
-        public ReactionRule(MaterialId source, MaterialId trigger, MaterialId result, float probability) {
+        public ReactionRule(MatId source, MatId trigger, MatId result, float probability) {
             Source = source;
             Trigger = trigger;
             Result = result;
@@ -65,11 +65,11 @@ namespace FallingSand.Scripts {
     /// Probability is the chance per step that the source decays into the result.
     /// </summary>
     public readonly struct DecayRule {
-        public readonly MaterialId Source;
-        public readonly MaterialId Result;
+        public readonly MatId Source;
+        public readonly MatId Result;
         public readonly float Probability;
 
-        public DecayRule(MaterialId source, MaterialId result, float probability) {
+        public DecayRule(MatId source, MatId result, float probability) {
             Source = source;
             Result = result;
             Probability = probability;
@@ -127,7 +127,7 @@ namespace FallingSand.Scripts {
             // Granulars
             new() {
                 Name = "Sand", Description = "Light granular. Melted into glass by lava.",
-                Fluidity = 0, Density = 150, Weight = 128, Drag = 128,
+                Fluidity = 0, Density = 160, Weight = 128, Drag = 128,
                 Variation = 0.5f, Opacity = 0.7f,
                 Color = new Color(0.8207547f, 0.5865165f, 0.32907617f),
             },
@@ -199,11 +199,11 @@ namespace FallingSand.Scripts {
             },
             new() {
                 Name = "Plasma", Description = "Extremely hot. Melts and burns almost everything.",
-                Fluidity = 32, Density = 3, Weight = -24, Drag = 150,
-                Variation = 0.5f, Opacity = 0.03f,
-                EmissionColor = new Color(0.6f, 0.3f, 1f),
-                EmissionIntensity = 5f,
-                Color = new Color(0.7f, 0.4f, 1f),
+                Fluidity = 32, Density = 3, Weight = -32, Drag = 100,
+                Variation = 0.2f, Opacity = 0.03f,
+                EmissionColor = new Color(0.5f, 0.3f, 1f),
+                EmissionIntensity = 2f,
+                Color = new Color(0.4f, 0.3f, 0.9f),
             },
 
             // Gases
@@ -215,15 +215,15 @@ namespace FallingSand.Scripts {
             },
             new() {
                 Name = "Smoke", Description = "Buoyant gas. Dissipates over time.",
-                Fluidity = 64, Density = 8, Weight = -48, Drag = 230,
-                Variation = 0.2f, Opacity = 0.1f,
+                Fluidity = 128, Density = 8, Weight = -32, Drag = 128,
+                Variation = 0.2f, Opacity = 0.05f,
                 Color = new Color(0.2f, 0.2f, 0.15f, 0.7f),
             },
 
             // Organic
             new() {
                 Name = "Algae", Description = "Grows on water. Decays into sludge.",
-                Fluidity = 2, Density = 60, Weight = 64, Drag = 192,
+                Fluidity = 4, Density = 60, Weight = 64, Drag = 192,
                 Variation = 0.4f, Opacity = 0.04f,
                 Color = new Color(0.15f, 0.45f, 0.1f),
             },
@@ -231,7 +231,7 @@ namespace FallingSand.Scripts {
             // Mixtures
             new() {
                 Name = "Sludge", Description = "Dead biomass. Burns slowly.",
-                Fluidity = 4, Density = 160, Weight = 96, Drag = 200,
+                Fluidity = 8, Density = 150, Weight = 96, Drag = 200,
                 Variation = 0.2f, Opacity = 0.8f,
                 Color = new Color(0.3f, 0.22f, 0.12f),
             },
@@ -243,121 +243,122 @@ namespace FallingSand.Scripts {
         // Uploaded as a [MAX_MATERIALS * MAX_MATERIALS] LUT on the GPU.
         private static readonly List<ReactionRule> _reactions = new() {
             // Stone
-            new(MaterialId.Stone, MaterialId.Acid,   MaterialId.Empty, 0.03f),
-            new(MaterialId.Stone, MaterialId.Plasma,  MaterialId.Lava,  0.3f),
+            new(MatId.Stone, MatId.Acid,      MatId.Empty, 0.03f),
+            new(MatId.Stone, MatId.Plasma,    MatId.Lava,  0.1f),
 
             // Glass
-            new(MaterialId.Glass, MaterialId.Acid,   MaterialId.Empty, 0.02f),
-            new(MaterialId.Glass, MaterialId.Plasma,  MaterialId.Lava,  0.2f),
+            new(MatId.Glass, MatId.Acid,      MatId.Empty, 0.02f),
+            new(MatId.Glass, MatId.Plasma,    MatId.Lava,  0.1f),
+            new(MatId.Glass, MatId.Lava,      MatId.Lava,  0.005f),
 
             // Wood
-            new(MaterialId.Wood, MaterialId.Fire,    MaterialId.Fire,  0.1f),
-            new(MaterialId.Wood, MaterialId.Ember,   MaterialId.Fire,  0.08f),
-            new(MaterialId.Wood, MaterialId.Lava,    MaterialId.Fire,  0.3f),
-            new(MaterialId.Wood, MaterialId.Plasma,  MaterialId.Fire,  0.8f),
-            new(MaterialId.Wood, MaterialId.Acid,    MaterialId.Empty, 0.04f),
+            new(MatId.Wood, MatId.Fire,    MatId.Fire,  0.1f),
+            new(MatId.Wood, MatId.Ember,   MatId.Fire,  0.08f),
+            new(MatId.Wood, MatId.Lava,    MatId.Fire,  0.3f),
+            new(MatId.Wood, MatId.Plasma,  MatId.Fire,  0.8f),
+            new(MatId.Wood, MatId.Acid,    MatId.Empty, 0.04f),
 
             // Ice
-            new(MaterialId.Ice, MaterialId.Water,   MaterialId.Water, 0.005f),
-            new(MaterialId.Ice, MaterialId.Steam,   MaterialId.Water, 0.01f),
-            new(MaterialId.Ice, MaterialId.Fire,    MaterialId.Water, 0.1f),
-            new(MaterialId.Ice, MaterialId.Lava,    MaterialId.Water, 0.5f),
-            new(MaterialId.Ice, MaterialId.Plasma,  MaterialId.Steam, 0.9f),
-            new(MaterialId.Ice, MaterialId.Acid,    MaterialId.Water, 0.06f),
+            new(MatId.Ice, MatId.Water,   MatId.Water, 0.005f),
+            new(MatId.Ice, MatId.Steam,   MatId.Water, 0.01f),
+            new(MatId.Ice, MatId.Fire,    MatId.Water, 0.1f),
+            new(MatId.Ice, MatId.Lava,    MatId.Water, 0.5f),
+            new(MatId.Ice, MatId.Plasma,  MatId.Steam, 0.9f),
+            new(MatId.Ice, MatId.Acid,    MatId.Water, 0.06f),
 
             // Sand
-            new(MaterialId.Sand, MaterialId.Lava,   MaterialId.Glass, 0.1f),
-            new(MaterialId.Sand, MaterialId.Plasma,  MaterialId.Glass, 0.6f),
-            new(MaterialId.Sand, MaterialId.Acid,    MaterialId.Empty, 0.08f),
+            new(MatId.Sand, MatId.Lava,   MatId.Glass, 0.1f),
+            new(MatId.Sand, MatId.Plasma,  MatId.Glass, 0.6f),
+            new(MatId.Sand, MatId.Acid,    MatId.Empty, 0.08f),
 
             // Gravel
-            new(MaterialId.Gravel, MaterialId.Lava,  MaterialId.Lava,  0.02f),
-            new(MaterialId.Gravel, MaterialId.Plasma, MaterialId.Lava,  0.5f),
-            new(MaterialId.Gravel, MaterialId.Acid,  MaterialId.Empty, 0.05f),
+            new(MatId.Gravel, MatId.Lava,  MatId.Lava,  0.02f),
+            new(MatId.Gravel, MatId.Plasma, MatId.Lava,  0.5f),
+            new(MatId.Gravel, MatId.Acid,  MatId.Empty, 0.05f),
 
             // Snow
-            new(MaterialId.Snow, MaterialId.Ice,    MaterialId.Ice,   0.01f),
-            new(MaterialId.Snow, MaterialId.Water,   MaterialId.Water, 0.05f),
-            new(MaterialId.Snow, MaterialId.Steam,   MaterialId.Water, 0.04f),
-            new(MaterialId.Snow, MaterialId.Fire,    MaterialId.Water, 0.4f),
-            new(MaterialId.Snow, MaterialId.Lava,    MaterialId.Steam, 0.9f),
-            new(MaterialId.Snow, MaterialId.Plasma,  MaterialId.Steam, 0.9f),
+            new(MatId.Snow, MatId.Ice,      MatId.Ice,   0.01f),
+            new(MatId.Snow, MatId.Water,    MatId.Water, 0.05f),
+            new(MatId.Snow, MatId.Steam,    MatId.Water, 0.04f),
+            new(MatId.Snow, MatId.Fire,     MatId.Water, 0.4f),
+            new(MatId.Snow, MatId.Lava,     MatId.Steam, 0.9f),
+            new(MatId.Snow, MatId.Plasma,   MatId.Steam, 0.9f),
 
             // Gunpowder
-            new(MaterialId.Gunpowder, MaterialId.Fire,   MaterialId.Fire, 0.9f),
-            new(MaterialId.Gunpowder, MaterialId.Ember,  MaterialId.Fire, 0.8f),
-            new(MaterialId.Gunpowder, MaterialId.Lava,   MaterialId.Fire, 0.9f),
-            new(MaterialId.Gunpowder, MaterialId.Plasma, MaterialId.Fire, 0.95f),
+            new(MatId.Gunpowder, MatId.Fire,   MatId.Fire, 1.0f),
+            new(MatId.Gunpowder, MatId.Ember,  MatId.Fire, 1.0f),
+            new(MatId.Gunpowder, MatId.Lava,   MatId.Fire, 1.0f),
+            new(MatId.Gunpowder, MatId.Plasma, MatId.Fire, 1.0f),
 
             // Water
-            new(MaterialId.Water, MaterialId.Lava,   MaterialId.Steam, 0.8f),
-            new(MaterialId.Water, MaterialId.Algae,  MaterialId.Algae, 0.005f),
+            new(MatId.Water, MatId.Lava,   MatId.Steam, 0.8f),
+            new(MatId.Water, MatId.Algae,  MatId.Algae, 0.005f),
 
             // Oil
-            new(MaterialId.Oil, MaterialId.Lava,    MaterialId.Fire,  0.7f),
-            new(MaterialId.Oil, MaterialId.Fire,    MaterialId.Fire,  0.4f),
-            new(MaterialId.Oil, MaterialId.Ember,   MaterialId.Fire,  0.3f),
-            new(MaterialId.Oil, MaterialId.Plasma,  MaterialId.Fire,  0.9f),
+            new(MatId.Oil, MatId.Lava,    MatId.Fire,  0.7f),
+            new(MatId.Oil, MatId.Fire,    MatId.Fire,  0.4f),
+            new(MatId.Oil, MatId.Ember,   MatId.Fire,  0.3f),
+            new(MatId.Oil, MatId.Plasma,  MatId.Fire,  0.9f),
 
             // Acid
-            new(MaterialId.Acid, MaterialId.Water,  MaterialId.Water, 0.05f),
-            new(MaterialId.Acid, MaterialId.Lava,   MaterialId.Steam, 0.7f),
-            new(MaterialId.Acid, MaterialId.Fire,   MaterialId.Steam, 0.5f),
-            new(MaterialId.Acid, MaterialId.Plasma, MaterialId.Steam, 0.9f),
+            new(MatId.Acid, MatId.Water,  MatId.Water, 0.05f),
+            new(MatId.Acid, MatId.Lava,   MatId.Steam, 0.7f),
+            new(MatId.Acid, MatId.Fire,   MatId.Steam, 0.5f),
+            new(MatId.Acid, MatId.Plasma, MatId.Steam, 0.9f),
 
             // Lava
-            new(MaterialId.Lava, MaterialId.Water,  MaterialId.Stone, 0.4f),
-            new(MaterialId.Lava, MaterialId.Snow,   MaterialId.Stone, 0.5f),
-            new(MaterialId.Lava, MaterialId.Ice,    MaterialId.Stone, 0.6f),
+            new(MatId.Lava, MatId.Water,  MatId.Stone, 0.4f),
+            new(MatId.Lava, MatId.Snow,   MatId.Stone, 0.5f),
+            new(MatId.Lava, MatId.Ice,    MatId.Stone, 0.6f),
 
             // Fire
-            new(MaterialId.Fire, MaterialId.Water,  MaterialId.Steam, 0.9f),
+            new(MatId.Fire, MatId.Water,  MatId.Steam, 0.9f),
 
             // Ember
-            new(MaterialId.Ember, MaterialId.Water, MaterialId.Steam, 0.9f),
+            new(MatId.Ember, MatId.Water, MatId.Steam, 0.9f),
 
             // Plasma
-            new(MaterialId.Plasma, MaterialId.Water, MaterialId.Steam, 0.7f),
+            new(MatId.Plasma, MatId.Water, MatId.Steam, 0.7f),
 
             // Sludge
-            new(MaterialId.Sludge, MaterialId.Lava,   MaterialId.Fire, 0.2f),
-            new(MaterialId.Sludge, MaterialId.Fire,   MaterialId.Fire, 0.07f),
-            new(MaterialId.Sludge, MaterialId.Ember,  MaterialId.Fire, 0.05f),
-            new(MaterialId.Sludge, MaterialId.Plasma, MaterialId.Fire, 0.8f),
+            new(MatId.Sludge, MatId.Lava,   MatId.Fire, 0.2f),
+            new(MatId.Sludge, MatId.Fire,   MatId.Fire, 0.07f),
+            new(MatId.Sludge, MatId.Ember,  MatId.Fire, 0.05f),
+            new(MatId.Sludge, MatId.Plasma, MatId.Fire, 0.8f),
 
             // Algae
-            new(MaterialId.Algae, MaterialId.Fire,  MaterialId.Smoke, 0.1f),
-            new(MaterialId.Algae, MaterialId.Ember, MaterialId.Smoke, 0.05f),
-            new(MaterialId.Algae, MaterialId.Lava,  MaterialId.Smoke, 0.9f),
-            new(MaterialId.Algae, MaterialId.Acid,  MaterialId.Empty, 0.1f),
+            new(MatId.Algae, MatId.Fire,  MatId.Smoke, 0.1f),
+            new(MatId.Algae, MatId.Ember, MatId.Smoke, 0.05f),
+            new(MatId.Algae, MatId.Lava,  MatId.Smoke, 0.9f),
+            new(MatId.Algae, MatId.Acid,  MatId.Empty, 0.1f),
             
-            new(MaterialId.Algae, MaterialId.Snow, MaterialId.Sludge, 0.05f),
-            new(MaterialId.Algae, MaterialId.Ice, MaterialId.Sludge, 0.05f),
+            new(MatId.Algae, MatId.Snow, MatId.Sludge, 0.05f),
+            new(MatId.Algae, MatId.Ice, MatId.Sludge, 0.05f),
         };
 
         // --- Decay ---
 
         private static readonly List<DecayRule> _decay = new() {
             // Fire burns out into ember.
-            new(MaterialId.Fire, MaterialId.Ember, 0.1f),
+            new(MatId.Fire, MatId.Ember, 0.1f),
 
             // Ember cools into smoke.
-            new(MaterialId.Ember, MaterialId.Smoke, 0.1f),
+            new(MatId.Ember, MatId.Smoke, 0.1f),
 
-            // Plasma cools into fire quickly.
-            new(MaterialId.Plasma, MaterialId.Fire, 0.06f),
+            // Plasma rapidly cools and dissipates.
+            new(MatId.Plasma, MatId.Empty, 0.1f),
 
             // Smoke dissipates.
-            new(MaterialId.Smoke, MaterialId.Empty, 0.01f),
+            new(MatId.Smoke, MatId.Empty, 0.02f),
 
             // Steam dissipates.
-            new(MaterialId.Steam, MaterialId.Empty, 0.01f),
+            new(MatId.Steam, MatId.Empty, 0.02f),
 
             // Acid slowly evaporates.
-            new(MaterialId.Acid, MaterialId.Smoke, 0.002f),
+            new(MatId.Acid, MatId.Smoke, 0.002f),
             
             // Algae slowly dies off into mud.
-            new(MaterialId.Algae, MaterialId.Sludge, 0.0001f)
+            new(MatId.Algae, MatId.Sludge, 0.0001f),
         };
     }
 }
