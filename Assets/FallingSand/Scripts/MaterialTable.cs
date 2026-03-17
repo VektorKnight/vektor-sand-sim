@@ -239,7 +239,7 @@ namespace FallingSand.Scripts {
 
         // --- Reactions ---
         
-        // Source -> Trigger -> Result (with some probability determining rate)
+        // Source -> Trigger -> Result with probability determining reaction rate.
         // Uploaded as a [MAX_MATERIALS * MAX_MATERIALS] LUT on the GPU.
         private static readonly List<ReactionRule> _reactions = new() {
             // Stone

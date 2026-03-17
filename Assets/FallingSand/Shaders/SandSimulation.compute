@@ -4,10 +4,10 @@
 // GPU falling-sand simulation using a single-buffer, four-color tiling
 // scheme with compare-and-swap (CAS) for thread-safe cell movement.
 //
-// Frame execution order (driven by SandSimulation.cs):
+// Frame execution order (driven by SandSimulationController.cs):
 //   1. Paint        – write user input into the grid
 //   2. PrepareFrame – clear flags, reset stalled velocity, apply gravity and drag
-//   3. Simulate     – _SimSteps iterations × 4 passes of movement
+//   3. Simulate     – StepsPerFrame iterations × 4 passes of movement
 //
 // Post-process lighting and visualization live in SandLighting.compute.
 //
@@ -21,21 +21,25 @@
 #pragma kernel PrepareFrame
 #pragma kernel Simulate
 
-// Paint params.
-int _PaintX;
-int _PaintY;
-int _PaintR;
-uint _PaintType;
-uint _PaintReplace; // 1 = overwrite existing materials, 0 = only fill empty cells.
+// --- Constant buffers ---
 
-// Simulation params.
-int _SimWidth;
-int _SimHeight;
-int _SimSteps;
+cbuffer SimConfig {
+    uint2 Dimensions;
+    uint  StepsPerFrame;
+    uint  Gravity;
+    uint  CurrentFrame;
+};
+
+cbuffer SimPaint {
+    int2 PaintOrigin;
+    uint PaintRadius;
+    uint PaintMaterial;
+    uint PaintReplace;
+};
+
+// --- Bare uniforms (change per-step/pass) ---
 int _SimStep;
-int _SimFrame;
 int _SimPass;
-int _Gravity;
 
 // Simulation data buffers.
 StructuredBuffer<MaterialProperties> _Materials;
@@ -47,13 +51,13 @@ StructuredBuffer<DecayEntry> _Decay; // LUT indexed by material ID
 
 // Convert a 2D index to 1D buffer.
 int to_flat(int2 i) {
-    return i.x + i.y * _SimWidth;
+    return i.x + i.y * (int)Dimensions.x;
 }
 
 // Determines if a given position is in-bounds.
 bool in_bounds(int2 id) {
-    return id.x >= 0 && id.x < _SimWidth &&
-           id.y >= 0 && id.y < _SimHeight;
+    return id.x >= 0 && id.x < (int)Dimensions.x &&
+           id.y >= 0 && id.y < (int)Dimensions.y;
 }
 
 // Fetch the material properties for a given cell by its ID.
@@ -72,10 +76,10 @@ void set_cell_data(int2 id, uint data) {
 }
 
 // Bresenham-style gating.
-// Distributes interval-based actions evenly across _SimSteps.
+// Distributes interval-based actions evenly across StepsPerFrame.
 // Returns true on steps where the scaled position crosses an integer boundary.
 bool bresenham(int vel) {
-    float steps = (float)_SimSteps;
+    float steps = (float)StepsPerFrame;
     return floor(_SimStep * vel / steps) !=
            floor((_SimStep - 1) * vel / steps);
 }
@@ -107,11 +111,11 @@ bool try_move(int2 from, int2 to, uint cell) {
             ? (int)mat_to.density - (int)mat_from.density
             : (int)mat_from.density - (int)mat_to.density;
         if (diff <= 0) return false;
-        
+
         // Best version so far.
         // Fixes an issue where very viscous fluids would effectively halt heavier granulars from passing through.
         // Somewhat accurate like tar but not very "fun".
-        const uint roll = hash(from, _SimFrame * _SimSteps + _SimStep) % 65536;
+        const uint roll = hash(from, CurrentFrame * StepsPerFrame + _SimStep) % 65536;
         const uint chance = (uint)diff * max(mat_from.fluidity, mat_to.fluidity);
         if (roll >= chance) {
             return false;
@@ -163,10 +167,10 @@ void evaluate_move(uint2 id) {
     // Try to execute a vertical move.
     if (move_y) {
         const int dir = sign(y_vel);
-        const uint h = hash(id, _SimFrame);
+        const uint h = hash(id, CurrentFrame);
         const int side = (h & 1) == 0 ? -1 : 1;
         const bool diagonal_first = ((h >> 2) & 3) == 0;
-        
+
         // Diagonal first breaks up column patterns.
         if (diagonal_first) {
             if (try_move(id, id + int2(side, dir), cell)) return;
@@ -197,8 +201,8 @@ void evaluate_move(uint2 id) {
         if (is_empty(ahead_cell)) return;
         if (get_mat_props(ahead_cell).density < mat.density) return;
 
-        const int side = (hash(id, _SimFrame * _SimSteps + _SimStep) & 1) == 0 ? -1 : 1;
-        
+        const int side = (hash(id, CurrentFrame * StepsPerFrame + _SimStep) & 1) == 0 ? -1 : 1;
+
         try_move(id, id + int2(side, 0), cell);
     }
 }
@@ -215,35 +219,35 @@ uint make_cell(uint mat_id, int2 pos) {
 [numthreads(8,8,1)]
 void Paint(uint3 id : SV_DispatchThreadID) {
     const int2 cell = int2(
-        (int)id.x + (_PaintX - _PaintR),
-        (int)id.y + (_PaintY - _PaintR)
+        (int)id.x + (PaintOrigin.x - (int)PaintRadius),
+        (int)id.y + (PaintOrigin.y - (int)PaintRadius)
     );
 
-    const int dx = cell.x - _PaintX;
-    const int dy = cell.y - _PaintY;
+    const int dx = cell.x - PaintOrigin.x;
+    const int dy = cell.y - PaintOrigin.y;
     const int d2 = dx * dx + dy * dy;
 
     // Out of bounds or out of the paint radius.
-    if (cell.x < 0 || cell.x >= _SimWidth ||
-        cell.y < 0 || cell.y >= _SimHeight ||
-        d2 > _PaintR * _PaintR) {
+    if (cell.x < 0 || cell.x >= (int)Dimensions.x ||
+        cell.y < 0 || cell.y >= (int)Dimensions.y ||
+        d2 > (int)(PaintRadius * PaintRadius)) {
         return;
     }
-    
-    
-    if (!_PaintReplace && _PaintType != ID_EMPTY) {
+
+
+    if (!PaintReplace && PaintMaterial != ID_EMPTY) {
         if (!is_empty(get_cell_data(cell))) {
             return;
         }
     }
 
-    set_cell_data(cell, make_cell(_PaintType, cell));
+    set_cell_data(cell, make_cell(PaintMaterial, cell));
 }
 
 // Determines if a reaction/decay should occur based on the probability.
 // Salt differentiates rolls for different rules on the same cell/frame.
 bool should_react(int2 id, float probability, uint salt) {
-    return (hash(id, _SimFrame * 17u + salt) % 256) < (probability * 255);
+    return (hash(id, CurrentFrame * 17u + salt) % 256) < (probability * 255);
 }
 
 // ============================================================================
@@ -278,7 +282,7 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     int x_vel = get_x_vel(cell);
     int y_vel = get_y_vel(cell);
 
-    y_vel -= _Gravity * mat.weight / 256;
+    y_vel -= (int)Gravity * mat.weight / 256;
 
     x_vel = apply_drag(x_vel, (int)mat.drag);
     y_vel = apply_drag(y_vel, (int)mat.drag);
@@ -286,12 +290,12 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
 
     cell = set_x_vel(cell, x_vel);
     cell = set_y_vel(cell, y_vel);
-    
+
     // Cache neighbor material IDs before scanning reactions.
     // Reduces memory pressure versus we re-scanning all neighbors every iteration.
     const uint mat_id = get_mat_id(cell);
     uint neighbor_mats[8];
-    
+
     [unroll]
     for (uint n = 0; n < 8; n++) {
         const int2 n_id = id.xy + NEIGHBORS[n];
@@ -309,13 +313,13 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
         const ReactionEntry reaction = _Reactions[lut_row + neighbor_mats[n]];
         if (reaction.probability > 0 && should_react(id.xy, reaction.probability, mat_id * 8 + n)) {
             cell = make_cell(reaction.result, id.xy);
-            
+
             reacted = true;
-            
+
             break;
         }
     }
-    
+
     // Run material decay if a reaction did not occur.
     // We don't want double-mutations in the same frame as it would clobber intermediates.
     if (!reacted) {
@@ -324,7 +328,7 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
             cell = make_cell(decay.result, id.xy);
         }
     }
-    
+
     set_cell_data(id.xy, cell);
 }
 
@@ -334,8 +338,8 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
 [numthreads(8,8,1)]
 void Simulate(uint3 id : SV_DispatchThreadID) {
     // Compute cell position within the 4-color tiling pattern for this dispatch.
-    const int half_w = (_SimWidth + 1) / 2;
-    const int mx = ((_SimStep + _SimFrame) & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
+    const int half_w = ((int)Dimensions.x + 1) / 2;
+    const int mx = ((_SimStep + (int)CurrentFrame) & 1) == 0 ? (int)id.x : (half_w - 1 - (int)id.x);
     const int2 cell_id = int2(mx * 2 + (_SimPass & 1), (int)id.y * 2 + ((_SimPass >> 1) & 1));
 
     if (!in_bounds(cell_id)) {

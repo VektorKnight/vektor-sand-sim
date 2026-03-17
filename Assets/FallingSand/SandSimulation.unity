@@ -234,7 +234,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bc4992b1463cd4fb9a3bffbfeb780a47, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FallingSand.SandSimUI
-  _sim: {fileID: 263843364}
+  _sim: {fileID: 263843368}
   _fontSize: 11
   _hudFontSize: 10
   _matCellSize: {x: 56, y: 24}
@@ -253,7 +253,7 @@ GameObject:
   serializedVersion: 6
   m_Component:
   - component: {fileID: 263843365}
-  - component: {fileID: 263843364}
+  - component: {fileID: 263843368}
   - component: {fileID: 263843366}
   m_Layer: 0
   m_Name: SandSimulation
@@ -262,30 +262,6 @@ GameObject:
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
   m_IsActive: 1
---- !u!114 &263843364
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 263843363}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 4913bba9178847959de2590674a16b9e, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: Assembly-CSharp::FallingSand.SandSimulation
-  _paintRadius: 8
-  _paintRadiusMin: 1
-  _paintRadiusMax: 50
-  _gravity: 16
-  _simResolution: 2
-  _windowScale: 1
-  _baseSimSteps: 128
-  _frameRateCap: 1
-  _compute: {fileID: 7200000, guid: 729394d490e7540cba9d9ce75f2b9c43, type: 3}
-  _tempVis: {fileID: 677317741}
-  _premultShader: {fileID: 4800000, guid: 7f17615d7f39545c4b02f489ad0e1cb8, type: 3}
-  _lighting: {fileID: 263843366}
 --- !u!4 &263843365
 Transform:
   m_ObjectHideFlags: 0
@@ -327,6 +303,31 @@ MonoBehaviour:
   _bloomIntensity: 0.2
   _bloomSteps: 8
   _bloomBlurPasses: 1
+--- !u!114 &263843368
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 263843363}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 136299723b9e4f60a047f6004efa6742, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::FallingSand.Scripts.SandSimulationController
+  _paintRadius: 5
+  _paintRadiusMin: 1
+  _paintRadiusMax: 100
+  _gravity: 16
+  _simResolution: 2
+  _windowScale: 1
+  _baseSimSteps: 128
+  _frameRateCap: 1
+  _compute: {fileID: 7200000, guid: 729394d490e7540cba9d9ce75f2b9c43, type: 3}
+  _tempVis: {fileID: 677317741}
+  _premultShader: {fileID: 4800000, guid: 7f17615d7f39545c4b02f489ad0e1cb8, type: 3}
+  _lighting: {fileID: 263843366}
+  _visCompute: {fileID: 7200000, guid: 5aa6b718e71e24545815fd731c7dc619, type: 3}
 --- !u!1 &677317740
 GameObject:
   m_ObjectHideFlags: 0

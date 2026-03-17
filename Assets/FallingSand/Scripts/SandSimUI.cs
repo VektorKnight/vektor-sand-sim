@@ -12,7 +12,7 @@ namespace FallingSand.Scripts {
     /// Claude largely handled this. I hate UI. Thanks, Claude!
     /// </summary>
     public class SandSimUI : MonoBehaviour {
-        [SerializeField] private SandSimulation _sim;
+        [SerializeField] private SandSimulationController _sim;
 
         [Header("Layout")]
         [SerializeField] private int _fontSize = 11;
@@ -228,7 +228,7 @@ namespace FallingSand.Scripts {
             CreateDropdown(_settingsPanel.transform, "Sim Resolution",
                 new[] { "960x600", "1280x800", "1600x1000", "1920x1200", "2560x1600" },
                 (int)_sim.Resolution,
-                idx => { _sim.Resolution = (SimResolution)idx; SaveSettings(); });
+                idx => { _sim.Resolution = (SandSimulationController.SimResolution)idx; SaveSettings(); });
 
             // Window Scale dropdown.
             CreateDropdown(_settingsPanel.transform, "Window Scale",
@@ -240,7 +240,7 @@ namespace FallingSand.Scripts {
             CreateDropdown(_settingsPanel.transform, "Frame Rate",
                 new[] { "VSync", "60 FPS" },
                 (int)_sim.FrameCap,
-                idx => { _sim.FrameCap = (FrameRateCap)idx; SaveSettings(); });
+                idx => { _sim.FrameCap = (SandSimulationController.FrameRateCap)idx; SaveSettings(); });
 
             // Clear simulation.
             var clearBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, _settingsRowHeight), () => _sim.RecreateSimulation());
@@ -316,7 +316,7 @@ namespace FallingSand.Scripts {
             public float lightIntensity = 2f;
             public float lightR = 1f, lightG = 1f, lightB = 1f;
             public float ambientR = 0.1f, ambientG = 0.1f, ambientB = 0.1f;
-            public int resolution = (int)SimResolution.Res1600x1000;
+            public int resolution = (int)SandSimulationController.SimResolution.Res1600x1000;
             public int windowScale = 1;
             public int frameCap;
             public int paintRadius = 5;
@@ -354,9 +354,9 @@ namespace FallingSand.Scripts {
                     Mathf.Clamp01(s.lightR), Mathf.Clamp01(s.lightG), Mathf.Clamp01(s.lightB));
                 _sim.Lighting.AmbientColor = new Color(
                     Mathf.Clamp01(s.ambientR), Mathf.Clamp01(s.ambientG), Mathf.Clamp01(s.ambientB));
-                _sim.Resolution = (SimResolution)Mathf.Clamp(s.resolution, 0, 4);
+                _sim.Resolution = (SandSimulationController.SimResolution)Mathf.Clamp(s.resolution, 0, 4);
                 _sim.WindowScale = s.windowScale; // Setter already clamps 1-3.
-                _sim.FrameCap = (FrameRateCap)Mathf.Clamp(s.frameCap, 0, 1);
+                _sim.FrameCap = (SandSimulationController.FrameRateCap)Mathf.Clamp(s.frameCap, 0, 1);
                 _sim.PaintRadius = s.paintRadius; // Setter already clamps to min/max.
                 _sim.SelectedMaterialIndex = s.selectedMat; // Setter already clamps to valid range.
             } catch (System.Exception e) {

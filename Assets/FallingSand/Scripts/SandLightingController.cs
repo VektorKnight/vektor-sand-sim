@@ -1,8 +1,13 @@
+using System.Runtime.InteropServices;
+using Unity.Collections;
+using Unity.Mathematics;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace FallingSand.Scripts {
     /// <summary>
-    /// Dispatches lighting compute passes for direct lighting, emission, blur, and visualization.
+    /// Records lighting compute passes into a CommandBuffer.
+    /// Owns the LightConfig cbuffer, bloom textures, and lighting settings.
     /// </summary>
     public class SandLightingController : MonoBehaviour {
         [SerializeField] private ComputeShader _compute;
@@ -10,12 +15,16 @@ namespace FallingSand.Scripts {
         [Header("Lighting")]
         [SerializeField] [Range(0f, 360f)] private float _lightAngle = 60f;
         [SerializeField] private Color _lightColor = Color.white;
+        
         [SerializeField] [Range(0f, 5f)] private float _lightIntensity = 2f;
         [SerializeField] private Color _ambientColor = new(0.1f, 0.1f, 0.1f, 1f);
+        
         [SerializeField] [Range(16, 1024)] private int _lightMaxSteps = 64;
         [SerializeField] [Range(1, 4)] private int _lightDownscale = 3;
         [SerializeField] [Range(1, 8)] private int _lightBlurPasses = 3;
+        
         [SerializeField] private bool _lightEnabled = true;
+        
         [SerializeField] [Range(8, 256)] private int _emissionMaxSteps = 32;
 
         [Header("Bloom")]
@@ -24,7 +33,7 @@ namespace FallingSand.Scripts {
         [SerializeField] [Range(8, 128)] private int _bloomSteps = 48;
         [SerializeField] [Range(0, 8)] private int _bloomBlurPasses = 3;
 
-        // Defaults captured from inspector before PlayerPrefs overrides.
+        // Defaults captured from inspector before overrides.
         private float _defaultAngle;
         private float _defaultIntensity;
         private Color _defaultLightColor;
@@ -37,45 +46,19 @@ namespace FallingSand.Scripts {
         private RenderTexture _bloomTexture;
         private RenderTexture _bloomTextureTemp;
 
+        // LightConfig cbuffer.
+        private ComputeBuffer _lightConfigBuffer;
+
         // Kernel handles.
         private int KERNEL_LIGHT;
         private int KERNEL_EMISSION;
         private int KERNEL_BLUR_H;
         private int KERNEL_BLUR_V;
         private int KERNEL_BLOOM_GATHER;
-        private int KERNEL_VIS;
-
-        // Shader property IDs.
-        // TODO: At this point we might want to just make a LightParams buffer for some of these.
-        private static readonly int ID_SIM_WIDTH            = Shader.PropertyToID("_SimWidth");
-        private static readonly int ID_SIM_HEIGHT           = Shader.PropertyToID("_SimHeight");
-        private static readonly int ID_SIM_DATA             = Shader.PropertyToID("_SimData");
-        private static readonly int ID_MATERIALS            = Shader.PropertyToID("_Materials");
-        private static readonly int ID_VIS_TEXTURE          = Shader.PropertyToID("_VisTexture");
-        private static readonly int ID_LIGHT_TEXTURE        = Shader.PropertyToID("_LightTexture");
-        private static readonly int ID_LIGHT_TEXTURE_TEMP   = Shader.PropertyToID("_LightTextureTemp");
-        private static readonly int ID_LIGHT_TEXTURE_READ   = Shader.PropertyToID("_LightTextureRead");
-        private static readonly int ID_LIGHT_WIDTH          = Shader.PropertyToID("_LightWidth");
-        private static readonly int ID_LIGHT_HEIGHT         = Shader.PropertyToID("_LightHeight");
-        private static readonly int ID_LIGHT_DIR_X          = Shader.PropertyToID("_LightDirX");
-        private static readonly int ID_LIGHT_DIR_Y          = Shader.PropertyToID("_LightDirY");
-        private static readonly int ID_LIGHT_COLOR          = Shader.PropertyToID("_LightColor");
-        private static readonly int ID_AMBIENT_COLOR        = Shader.PropertyToID("_AmbientColor");
-        private static readonly int ID_LIGHT_MAX_STEPS      = Shader.PropertyToID("_LightMaxSteps");
-        private static readonly int ID_LIGHT_DOWNSCALE      = Shader.PropertyToID("_LightDownscale");
-        private static readonly int ID_EMISSION_MAX_STEPS   = Shader.PropertyToID("_EmissionMaxSteps");
-        private static readonly int ID_LIGHT_ENABLED        = Shader.PropertyToID("_LightEnabled");
-        private static readonly int ID_BLOOM_INTENSITY      = Shader.PropertyToID("_BloomIntensity");
-        private static readonly int ID_BLOOM_STEPS          = Shader.PropertyToID("_BloomSteps");
-        private static readonly int ID_BLOOM_TEXTURE        = Shader.PropertyToID("_BloomTexture");
-        private static readonly int ID_BLOOM_TEXTURE_READ   = Shader.PropertyToID("_BloomTextureRead");
-        private static readonly int ID_CURSOR_X             = Shader.PropertyToID("_CursorX");
-        private static readonly int ID_CURSOR_Y             = Shader.PropertyToID("_CursorY");
-        private static readonly int ID_CURSOR_R             = Shader.PropertyToID("_CursorR");
-        private static readonly int ID_CURSOR_MAT           = Shader.PropertyToID("_CursorMat");
 
         // --- Public API ---
 
+        public ComputeShader Compute => _compute;
         public bool IsReady => _compute;
 
         public float LightAngle {
@@ -118,10 +101,12 @@ namespace FallingSand.Scripts {
             set => _lightDownscale = value;
         }
 
+        public float EffectiveBloomIntensity => _lightEnabled && _bloomEnabled ? _bloomIntensity : 0f;
+        public RenderTexture BloomTexture => _bloomTexture;
+
         // --- Initialization ---
 
         private void Awake() {
-            // Snapshot inspector defaults before any Start/LoadSettings can override them.
             _defaultEnabled = _lightEnabled;
             _defaultAngle = _lightAngle;
             _defaultIntensity = _lightIntensity;
@@ -132,12 +117,19 @@ namespace FallingSand.Scripts {
         }
 
         public void Initialize() {
-            KERNEL_LIGHT        = _compute.FindKernel("Light");
-            KERNEL_EMISSION     = _compute.FindKernel("Emission");
-            KERNEL_BLUR_H       = _compute.FindKernel("BlurH");
-            KERNEL_BLUR_V       = _compute.FindKernel("BlurV");
-            KERNEL_BLOOM_GATHER = _compute.FindKernel("BloomGather");
-            KERNEL_VIS          = _compute.FindKernel("Visualize");
+            KERNEL_LIGHT        = _compute.FindKernel(SandBindings.KERNEL_LIGHT);
+            KERNEL_EMISSION     = _compute.FindKernel(SandBindings.KERNEL_EMISSION);
+            KERNEL_BLUR_H       = _compute.FindKernel(SandBindings.KERNEL_BLUR_H);
+            KERNEL_BLUR_V       = _compute.FindKernel(SandBindings.KERNEL_BLUR_V);
+            KERNEL_BLOOM_GATHER = _compute.FindKernel(SandBindings.KERNEL_BLOOM_GATHER);
+
+            _lightConfigBuffer = new ComputeBuffer(
+                1,
+                Marshal.SizeOf<SandBindings.LightConfigBuffer>(),
+                ComputeBufferType.Constant
+            );
+
+            _lightConfigBuffer.SetData(new[] { default(SandBindings.LightConfigBuffer) });
         }
 
         public void ResetToDefaults() {
@@ -150,135 +142,116 @@ namespace FallingSand.Scripts {
             _lightDownscale = _defaultDownscale;
         }
 
-        public void BindMaterials(ComputeBuffer materialBuffer) {
-            _compute.SetBuffer(KERNEL_LIGHT, ID_MATERIALS, materialBuffer);
-            _compute.SetBuffer(KERNEL_EMISSION, ID_MATERIALS, materialBuffer);
-            _compute.SetBuffer(KERNEL_BLOOM_GATHER, ID_MATERIALS, materialBuffer);
-            _compute.SetBuffer(KERNEL_VIS, ID_MATERIALS, materialBuffer);
+        public void Cleanup() {
+            ReleaseBloomTextures();
+
+            if (_lightConfigBuffer != null && _lightConfigBuffer.IsValid()) {
+                _lightConfigBuffer.Release();
+                _lightConfigBuffer = null;
+            }
         }
 
-        // --- Rendering ---
+        private void OnDisable() {
+            Cleanup();
+        }
 
-        public void Render(
+        // --- Record ---
+
+        public void Record(
+            CommandBuffer cmd,
             ComputeBuffer simData,
-            RenderTexture visTexture,
+            ComputeBuffer materialBuffer,
             RenderTexture lightTexture,
             RenderTexture lightTextureTemp,
-            int simFrame,
-            int cursorX, int cursorY, int cursorR, int cursorMat
+            int simFrame
         ) {
-            _compute.SetInt(ID_SIM_WIDTH, visTexture.width);
-            _compute.SetInt(ID_SIM_HEIGHT, visTexture.height);
-
-            if (_lightEnabled) {
-                EnsureBloomTextures(lightTexture.width, lightTexture.height);
-                var lightCadence = Mathf.Max(1, Mathf.RoundToInt(1f / (60f * Time.unscaledDeltaTime)));
-                if (simFrame % lightCadence == 0) {
-                    DispatchLight(simData, lightTexture);
-                    DispatchEmission(simData, lightTexture);
-                    for (var b = 0; b < _lightBlurPasses; b++)
-                        DispatchBlur(lightTexture, lightTextureTemp);
-
-                    if (_bloomEnabled) {
-                        DispatchBloomGather(simData, lightTexture);
-                        for (var b = 0; b < _bloomBlurPasses; b++)
-                            DispatchBlur(_bloomTexture, _bloomTextureTemp);
-                    }
-                }
+            if (!_lightEnabled) {
+                return;
             }
 
-            _compute.SetInt(ID_LIGHT_ENABLED, _lightEnabled ? 1 : 0);
-            _compute.SetFloat(ID_BLOOM_INTENSITY, _lightEnabled && _bloomEnabled ? _bloomIntensity : 0f);
+            EnsureBloomTextures(lightTexture.width, lightTexture.height);
 
-            DispatchVisualize(simData, visTexture, lightTexture, cursorX, cursorY, cursorR, cursorMat);
-        }
+            var lightCadence = Mathf.Max(1, Mathf.RoundToInt(1f / (60f * Time.unscaledDeltaTime)));
+            if (simFrame % lightCadence != 0) {
+                return;
+            }
 
-        // --- Dispatch ---
-
-        private void DispatchLight(ComputeBuffer simData, RenderTexture lightTexture) {
-            var groupsX = Mathf.CeilToInt((float)lightTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)lightTexture.height / 8);
-
+            // Build and stage LightConfig cbuffer.
             var rad = _lightAngle * Mathf.Deg2Rad;
-            _compute.SetInt(ID_LIGHT_DIR_X, Mathf.RoundToInt(Mathf.Cos(rad) * 16));
-            _compute.SetInt(ID_LIGHT_DIR_Y, Mathf.RoundToInt(Mathf.Sin(rad) * 16));
-
             var lc = _lightColor.linear;
-            _compute.SetVector(ID_LIGHT_COLOR, new Vector4(lc.r * _lightIntensity, lc.g * _lightIntensity, lc.b * _lightIntensity, 1f));
-            
             var ac = _ambientColor.linear;
-            _compute.SetVector(ID_AMBIENT_COLOR, new Vector4(ac.r, ac.g, ac.b, 1f));
+
+            var lightConfig = new SandBindings.LightConfigBuffer {
+                LightColor = new float4(lc.r * _lightIntensity, lc.g * _lightIntensity, lc.b * _lightIntensity, 1f),
+                AmbientColor = new float4(ac.r, ac.g, ac.b, 1f),
+                
+                LightDir = new int2(
+                    Mathf.RoundToInt(Mathf.Cos(rad) * 16),
+                    Mathf.RoundToInt(Mathf.Sin(rad) * 16)
+                ),
+                
+                LightMaxSteps = (uint)_lightMaxSteps,
+                LightDownscale = (uint)_lightDownscale,
+                
+                EmissionMaxSteps = (uint)_emissionMaxSteps,
+                BloomSteps = (uint)_bloomSteps,
+                LightDimensions = new uint2((uint)lightTexture.width, (uint)lightTexture.height),
+            };
+
+            var staging = new NativeArray<SandBindings.LightConfigBuffer>(1, Allocator.Temp);
             
-            _compute.SetInt(ID_LIGHT_MAX_STEPS, _lightMaxSteps);
-            _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
+            staging[0] = lightConfig;
+            
+            _lightConfigBuffer.SetData(staging);
 
-            _compute.SetBuffer(KERNEL_LIGHT, ID_SIM_DATA, simData);
-            _compute.SetTexture(KERNEL_LIGHT, ID_LIGHT_TEXTURE, lightTexture);
+            // Bind LightConfig cbuffer to lighting compute shader.
+            cmd.SetComputeConstantBufferParam(_compute, SandBindings.ID_CB_LIGHT_CONFIG, _lightConfigBuffer, 0, Marshal.SizeOf<SandBindings.LightConfigBuffer>());
 
-            _compute.Dispatch(KERNEL_LIGHT, groupsX, groupsY, 1);
+            var lightGroupsX = Mathf.CeilToInt((float)lightTexture.width / 8);
+            var lightGroupsY = Mathf.CeilToInt((float)lightTexture.height / 8);
+
+            // Bind buffers/textures.
+            cmd.SetComputeBufferParam(_compute, KERNEL_LIGHT, SandBindings.ID_SIM_DATA, simData);
+            cmd.SetComputeBufferParam(_compute, KERNEL_LIGHT, SandBindings.ID_MATERIAL_TABLE, materialBuffer);
+            cmd.SetComputeTextureParam(_compute, KERNEL_LIGHT, SandBindings.ID_LIGHT_TEXTURE, lightTexture);
+
+            // Light dispatch.
+            cmd.DispatchCompute(_compute, KERNEL_LIGHT, lightGroupsX, lightGroupsY, 1);
+
+            // Emission dispatch.
+            cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_SIM_DATA, simData);
+            cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_MATERIAL_TABLE, materialBuffer);
+            cmd.SetComputeTextureParam(_compute, KERNEL_EMISSION, SandBindings.ID_LIGHT_TEXTURE, lightTexture);
+            cmd.DispatchCompute(_compute, KERNEL_EMISSION, lightGroupsX, lightGroupsY, 1);
+
+            // Blur passes on light texture.
+            for (var b = 0; b < _lightBlurPasses; b++) {
+                RecordBlur(cmd, lightTexture, lightTextureTemp, lightGroupsX, lightGroupsY);
+            }
+
+            // Bloom.
+            if (_bloomEnabled) {
+                cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_SIM_DATA, simData);
+                cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_MATERIAL_TABLE, materialBuffer);
+                cmd.SetComputeTextureParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_BLOOM_TEXTURE, _bloomTexture);
+                cmd.DispatchCompute(_compute, KERNEL_BLOOM_GATHER, lightGroupsX, lightGroupsY, 1);
+
+                var bloomGroupsX = Mathf.CeilToInt((float)_bloomTexture.width / 8);
+                var bloomGroupsY = Mathf.CeilToInt((float)_bloomTexture.height / 8);
+                for (var b = 0; b < _bloomBlurPasses; b++) {
+                    RecordBlur(cmd, _bloomTexture, _bloomTextureTemp, bloomGroupsX, bloomGroupsY);
+                }
+            }
         }
 
-        private void DispatchEmission(ComputeBuffer simData, RenderTexture lightTexture) {
-            var groupsX = Mathf.CeilToInt((float)lightTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)lightTexture.height / 8);
+        private void RecordBlur(CommandBuffer cmd, RenderTexture texture, RenderTexture textureTemp, int groupsX, int groupsY) {
+            cmd.SetComputeTextureParam(_compute, KERNEL_BLUR_H, SandBindings.ID_LIGHT_TEXTURE, texture);
+            cmd.SetComputeTextureParam(_compute, KERNEL_BLUR_H, SandBindings.ID_LIGHT_TEXTURE_TEMP, textureTemp);
+            cmd.DispatchCompute(_compute, KERNEL_BLUR_H, groupsX, groupsY, 1);
 
-            _compute.SetInt(ID_EMISSION_MAX_STEPS, _emissionMaxSteps);
-            _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
-
-            _compute.SetBuffer(KERNEL_EMISSION, ID_SIM_DATA, simData);
-            _compute.SetTexture(KERNEL_EMISSION, ID_LIGHT_TEXTURE, lightTexture);
-
-            _compute.Dispatch(KERNEL_EMISSION, groupsX, groupsY, 1);
-        }
-
-        private void DispatchBlur(RenderTexture lightTexture, RenderTexture lightTextureTemp) {
-            var groupsX = Mathf.CeilToInt((float)lightTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)lightTexture.height / 8);
-
-            _compute.SetInt(ID_LIGHT_WIDTH, lightTexture.width);
-            _compute.SetInt(ID_LIGHT_HEIGHT, lightTexture.height);
-
-            _compute.SetTexture(KERNEL_BLUR_H, ID_LIGHT_TEXTURE, lightTexture);
-            _compute.SetTexture(KERNEL_BLUR_H, ID_LIGHT_TEXTURE_TEMP, lightTextureTemp);
-            _compute.Dispatch(KERNEL_BLUR_H, groupsX, groupsY, 1);
-
-            _compute.SetTexture(KERNEL_BLUR_V, ID_LIGHT_TEXTURE_TEMP, lightTextureTemp);
-            _compute.SetTexture(KERNEL_BLUR_V, ID_LIGHT_TEXTURE, lightTexture);
-            _compute.Dispatch(KERNEL_BLUR_V, groupsX, groupsY, 1);
-        }
-
-        private void DispatchBloomGather(ComputeBuffer simData, RenderTexture lightTexture) {
-            var groupsX = Mathf.CeilToInt((float)lightTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)lightTexture.height / 8);
-
-            _compute.SetInt(ID_BLOOM_STEPS, _bloomSteps);
-            _compute.SetInt(ID_LIGHT_DOWNSCALE, _lightDownscale);
-
-            _compute.SetBuffer(KERNEL_BLOOM_GATHER, ID_SIM_DATA, simData);
-            _compute.SetTexture(KERNEL_BLOOM_GATHER, ID_BLOOM_TEXTURE, _bloomTexture);
-
-            _compute.Dispatch(KERNEL_BLOOM_GATHER, groupsX, groupsY, 1);
-        }
-
-        private void DispatchVisualize(
-            ComputeBuffer simData, RenderTexture visTexture, RenderTexture lightTexture,
-            int cursorX, int cursorY, int cursorR, int cursorMat
-        ) {
-            var groupsX = Mathf.CeilToInt((float)visTexture.width / 8);
-            var groupsY = Mathf.CeilToInt((float)visTexture.height / 8);
-
-            _compute.SetInt(ID_CURSOR_X, cursorX);
-            _compute.SetInt(ID_CURSOR_Y, cursorY);
-            _compute.SetInt(ID_CURSOR_R, cursorR);
-            _compute.SetInt(ID_CURSOR_MAT, cursorMat);
-
-            _compute.SetBuffer(KERNEL_VIS, ID_SIM_DATA, simData);
-            _compute.SetTexture(KERNEL_VIS, ID_VIS_TEXTURE, visTexture);
-            _compute.SetTexture(KERNEL_VIS, ID_LIGHT_TEXTURE_READ, lightTexture);
-            if (_bloomTexture)
-                _compute.SetTexture(KERNEL_VIS, ID_BLOOM_TEXTURE_READ, _bloomTexture);
-
-            _compute.Dispatch(KERNEL_VIS, groupsX, groupsY, 1);
+            cmd.SetComputeTextureParam(_compute, KERNEL_BLUR_V, SandBindings.ID_LIGHT_TEXTURE_TEMP, textureTemp);
+            cmd.SetComputeTextureParam(_compute, KERNEL_BLUR_V, SandBindings.ID_LIGHT_TEXTURE, texture);
+            cmd.DispatchCompute(_compute, KERNEL_BLUR_V, groupsX, groupsY, 1);
         }
 
         // --- Bloom texture lifecycle ---
@@ -294,6 +267,7 @@ namespace FallingSand.Scripts {
                 filterMode = FilterMode.Bilinear,
                 useMipMap = false
             };
+            
             _bloomTexture.Create();
 
             _bloomTextureTemp = new RenderTexture(width, height, 0, RenderTextureFormat.ARGBHalf) {
@@ -301,16 +275,13 @@ namespace FallingSand.Scripts {
                 filterMode = FilterMode.Bilinear,
                 useMipMap = false
             };
+            
             _bloomTextureTemp.Create();
         }
 
         private void ReleaseBloomTextures() {
             if (_bloomTexture) { Destroy(_bloomTexture); _bloomTexture = null; }
             if (_bloomTextureTemp) { Destroy(_bloomTextureTemp); _bloomTextureTemp = null; }
-        }
-
-        private void OnDisable() {
-            ReleaseBloomTextures();
         }
     }
 }
