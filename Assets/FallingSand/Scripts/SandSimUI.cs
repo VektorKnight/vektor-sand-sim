@@ -25,9 +25,27 @@ namespace FallingSand.Scripts {
         [SerializeField] private int _settingsPadding = 8;
         [SerializeField] private int _settingsSpacing = 4;
 
+        [Header("Icons")]
+        [SerializeField] private Sprite _settingsIcon;
+        [SerializeField] private Sprite _pauseIcon;
+        [SerializeField] private Sprite _playIcon;
+
+        [Header("Category Icons")]
+        [SerializeField] private Sprite _iconSolids;
+        [SerializeField] private Sprite _iconPowders;
+        [SerializeField] private Sprite _iconLiquids;
+        [SerializeField] private Sprite _iconGases;
+        [SerializeField] private Sprite _iconEnergy;
+        [SerializeField] private Sprite _iconLife;
+
         private Text _hudText;
+        private Image _pauseButtonImage;
+        private MaterialCategory _activeCategory = MaterialCategory.Solids;
+        private readonly Dictionary<MaterialCategory, List<GameObject>> _matButtonsByCategory = new();
+        private readonly Dictionary<MaterialCategory, Outline> _catOutlines = new();
         private Text _tooltipText;
         private readonly List<Outline> _matOutlines = new();
+        private readonly List<int> _matOutlineIndices = new();
         private GameObject _settingsPanel;
         private bool _settingsOpen;
 
@@ -55,64 +73,74 @@ namespace FallingSand.Scripts {
         private void Update() {
             // Refresh material highlight.
             for (var i = 0; i < _matOutlines.Count; i++) {
-                _matOutlines[i].enabled = (i + 1) == _sim.SelectedMaterialIndex;
+                _matOutlines[i].enabled = _matOutlineIndices[i] == _sim.SelectedMaterialIndex;
             }
 
             // Refresh HUD.
             if (_hudText) {
                 var matName = _sim.Materials[_sim.SelectedMaterialIndex].Name;
                 var mode = _sim.PaintReplace ? "Replace" : "Fill";
-                _hudText.text = $"{_sim.FPS} FPS | Steps {_sim.EffectiveSteps}/{_sim.BaseSimSteps}\nSim {_sim.SimWidth}x{_sim.SimHeight} | Light {_sim.LightWidth}x{_sim.LightHeight}\n{matName} ({mode})";
+                var paused = _sim.Paused ? " | Paused" : "";
+                _hudText.text = $"{_sim.FPS} FPS | Steps {_sim.EffectiveSteps}/{_sim.BaseSimSteps}{paused}\nSim {_sim.SimWidth}x{_sim.SimHeight} | Light {_sim.LightWidth}x{_sim.LightHeight}\n{matName} ({mode})";
             }
         }
 
         // ---- Material bar ----
 
-        private int MaterialsPerRow => _matColumnsPerRow;
-
         private void BuildMaterialBar() {
-            var panel = CreatePanel(transform, "MaterialBar", new Color(0, 0, 0, 0.5f));
-            var rt = panel.GetComponent<RectTransform>();
-            rt.anchorMin = new Vector2(0.5f, 0f);
-            rt.anchorMax = new Vector2(0.5f, 0f);
-            rt.pivot = new Vector2(0.5f, 0f);
-            rt.anchoredPosition = new Vector2(0, 8);
-
-            var grid = panel.AddComponent<GridLayoutGroup>();
-            grid.cellSize = _matCellSize;
-            grid.spacing = new Vector2(2, 2);
-            grid.padding = new RectOffset(4, 4, 4, 4);
-            grid.constraint = GridLayoutGroup.Constraint.FixedColumnCount;
-            grid.constraintCount = MaterialsPerRow;
-            grid.childAlignment = TextAnchor.MiddleCenter;
-
-            var csf = panel.AddComponent<ContentSizeFitter>();
-            csf.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
-            csf.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
-
             var mats = _sim.Materials;
+            var categories = (MaterialCategory[])Enum.GetValues(typeof(MaterialCategory));
+
+            // Material row (bottom center) — single horizontal row, filtered by active category.
+            var matPanel = CreatePanel(transform, "MaterialBar", new Color(0, 0, 0, 0.5f));
+            var matPanelRT = matPanel.GetComponent<RectTransform>();
+            matPanelRT.anchorMin = new Vector2(0f, 0f);
+            matPanelRT.anchorMax = new Vector2(0f, 0f);
+            matPanelRT.pivot = new Vector2(0f, 0f);
+            matPanelRT.anchoredPosition = new Vector2(46, 8);
+
+            var matGrid = matPanel.AddComponent<HorizontalLayoutGroup>();
+            matGrid.spacing = 2;
+            matGrid.padding = new RectOffset(4, 4, 4, 4);
+            matGrid.childAlignment = TextAnchor.MiddleCenter;
+            matGrid.childForceExpandWidth = false;
+            matGrid.childForceExpandHeight = false;
+
+            var matCSF = matPanel.AddComponent<ContentSizeFitter>();
+            matCSF.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+            matCSF.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            // Build material buttons for all categories (toggled visible per category).
+            foreach (var cat in categories)
+                _matButtonsByCategory[cat] = new List<GameObject>();
+
             for (var i = 1; i < mats.Count; i++) {
                 var idx = i;
-                var desc = mats[i].Description;
-                var btn = CreateButton(panel.transform, mats[i].Color, _matCellSize, () => {
+                var mat = mats[i];
+                var btn = CreateButton(matPanel.transform, mat.Color, _matCellSize, () => {
                     _sim.SelectedMaterialIndex = idx;
                     SaveSettings();
                 });
 
+                var le = btn.gameObject.AddComponent<LayoutElement>();
+                le.preferredWidth = _matCellSize.x;
+                le.preferredHeight = _matCellSize.y;
+
                 // Hover tooltip.
-                if (!string.IsNullOrEmpty(desc)) {
+                if (!string.IsNullOrEmpty(mat.Description)) {
                     var trigger = btn.gameObject.AddComponent<EventTrigger>();
                     var enterEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
-                    enterEntry.callback.AddListener(_ => { if (_tooltipText) _tooltipText.text = desc; });
+                    enterEntry.callback.AddListener(_ => { if (_tooltipText) _tooltipText.text = mat.Description; });
                     trigger.triggers.Add(enterEntry);
                     var exitEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerExit };
                     exitEntry.callback.AddListener(_ => { if (_tooltipText) _tooltipText.text = ""; });
                     trigger.triggers.Add(exitEntry);
                 }
 
-                var label = CreateText(btn.transform, mats[i].Name, _fontSize - 1, TextAnchor.MiddleCenter);
+                var displayName = string.IsNullOrEmpty(mat.Label) ? mat.Name : mat.Label;
+                var label = CreateText(btn.transform, displayName, _fontSize - 1, TextAnchor.MiddleCenter);
                 label.raycastTarget = false;
-                label.color = GetLabelColor(mats[i].Color);
+                label.color = GetLabelColor(mat.Color);
                 var labelRT = label.GetComponent<RectTransform>();
                 labelRT.anchorMin = Vector2.zero;
                 labelRT.anchorMax = Vector2.one;
@@ -124,6 +152,53 @@ namespace FallingSand.Scripts {
                 outline.effectDistance = new Vector2(1, -1);
                 outline.enabled = false;
                 _matOutlines.Add(outline);
+                _matOutlineIndices.Add(i);
+
+                _matButtonsByCategory[mat.Category].Add(btn.gameObject);
+            }
+
+            // Category sidebar (left edge, vertically centered).
+            var catPanel = CreatePanel(transform, "CategoryBar", new Color(0, 0, 0, 0.5f));
+            var catPanelRT = catPanel.GetComponent<RectTransform>();
+            catPanelRT.anchorMin = new Vector2(0f, 0f);
+            catPanelRT.anchorMax = new Vector2(0f, 0f);
+            catPanelRT.pivot = new Vector2(0f, 0f);
+            catPanelRT.anchoredPosition = new Vector2(8, 8);
+
+            var catLayout = catPanel.AddComponent<VerticalLayoutGroup>();
+            catLayout.spacing = 2;
+            catLayout.padding = new RectOffset(4, 4, 4, 4);
+            catLayout.childAlignment = TextAnchor.MiddleCenter;
+            catLayout.childForceExpandWidth = false;
+            catLayout.childForceExpandHeight = false;
+
+            var catCSF = catPanel.AddComponent<ContentSizeFitter>();
+            catCSF.horizontalFit = ContentSizeFitter.FitMode.PreferredSize;
+            catCSF.verticalFit = ContentSizeFitter.FitMode.PreferredSize;
+
+            var catBtnSize = new Vector2(30, 30);
+            foreach (var cat in categories) {
+                var capturedCat = cat;
+                var icon = GetCategoryIcon(cat);
+                var catBtn = CreateIconButton(catPanel.transform, new Color(0.25f, 0.25f, 0.25f, 0.9f), catBtnSize, icon, cat.ToString(), () => {
+                    SetActiveCategory(capturedCat);
+                });
+
+                var catLE = catBtn.gameObject.AddComponent<LayoutElement>();
+                catLE.preferredWidth = catBtnSize.x;
+                catLE.preferredHeight = catBtnSize.y;
+
+                // Hover to preview category.
+                var hoverTrigger = catBtn.gameObject.AddComponent<EventTrigger>();
+                var hoverEntry = new EventTrigger.Entry { eventID = EventTriggerType.PointerEnter };
+                hoverEntry.callback.AddListener(_ => SetActiveCategory(capturedCat));
+                hoverTrigger.triggers.Add(hoverEntry);
+
+                var outline = catBtn.gameObject.AddComponent<Outline>();
+                outline.effectColor = Color.white;
+                outline.effectDistance = new Vector2(1, -1);
+                outline.enabled = false;
+                _catOutlines[cat] = outline;
             }
 
             // Tooltip text sits just above the material bar.
@@ -133,31 +208,53 @@ namespace FallingSand.Scripts {
             tooltipRT.anchorMin = new Vector2(0.5f, 0f);
             tooltipRT.anchorMax = new Vector2(0.5f, 0f);
             tooltipRT.pivot = new Vector2(0.5f, 0f);
-            // Two rows + padding + gap.
-            var barHeight = Mathf.CeilToInt((float)(mats.Count - 1) / MaterialsPerRow) * (int)(_matCellSize.y + 2) + 8;
+            var barHeight = (int)_matCellSize.y + 8;
             tooltipRT.anchoredPosition = new Vector2(0, 8 + barHeight + 4);
             tooltipRT.sizeDelta = new Vector2(400, 20);
+
+            // Show initial category.
+            SetActiveCategory(_activeCategory);
+        }
+
+        private void SetActiveCategory(MaterialCategory cat) {
+            _activeCategory = cat;
+            foreach (var kvp in _matButtonsByCategory) {
+                var visible = kvp.Key == cat;
+                foreach (var go in kvp.Value)
+                    go.SetActive(visible);
+            }
+            foreach (var kvp in _catOutlines)
+                kvp.Value.enabled = kvp.Key == cat;
         }
 
         // ---- Settings panel ----
 
         private void BuildSettingsPanel() {
-            // Toggle button.
-            var toggleBtn = CreateButton(transform, new Color(0.2f, 0.2f, 0.2f, 0.8f), new Vector2(90, 30), () => {
+            var btnSize = new Vector2(30, 30);
+            var btnColor = new Color(0.2f, 0.2f, 0.2f, 0.8f);
+
+            // Settings button.
+            var settingsBtn = CreateIconButton(transform, btnColor, btnSize, _settingsIcon, "Settings", () => {
                 _settingsOpen = !_settingsOpen;
                 _settingsPanel.SetActive(_settingsOpen);
             });
-            var toggleRT = toggleBtn.GetComponent<RectTransform>();
-            toggleRT.anchorMin = new Vector2(1f, 1f);
-            toggleRT.anchorMax = new Vector2(1f, 1f);
-            toggleRT.pivot = new Vector2(1f, 1f);
-            toggleRT.anchoredPosition = new Vector2(-8, -8);
-            var toggleText = CreateText(toggleBtn.transform, "Settings", _fontSize + 1, TextAnchor.MiddleCenter);
-            var toggleTextRT = toggleText.GetComponent<RectTransform>();
-            toggleTextRT.anchorMin = Vector2.zero;
-            toggleTextRT.anchorMax = Vector2.one;
-            toggleTextRT.offsetMin = Vector2.zero;
-            toggleTextRT.offsetMax = Vector2.zero;
+            var settingsRT = settingsBtn.GetComponent<RectTransform>();
+            settingsRT.anchorMin = new Vector2(1f, 1f);
+            settingsRT.anchorMax = new Vector2(1f, 1f);
+            settingsRT.pivot = new Vector2(1f, 1f);
+            settingsRT.anchoredPosition = new Vector2(-8, -8);
+
+            // Pause button (below settings).
+            var pauseBtn = CreateIconButton(transform, btnColor, btnSize, _pauseIcon, "Pause", () => {
+                _sim.Paused = !_sim.Paused;
+                _pauseButtonImage.sprite = _sim.Paused ? _playIcon : _pauseIcon;
+            });
+            var pauseRT = pauseBtn.GetComponent<RectTransform>();
+            pauseRT.anchorMin = new Vector2(1f, 1f);
+            pauseRT.anchorMax = new Vector2(1f, 1f);
+            pauseRT.pivot = new Vector2(1f, 1f);
+            pauseRT.anchoredPosition = new Vector2(-8, -42);
+            _pauseButtonImage = pauseBtn.transform.Find("Icon").GetComponent<Image>();
 
             // Panel.
             _settingsPanel = CreatePanel(transform, "SettingsPanel", new Color(0, 0, 0, 0.75f));
@@ -165,7 +262,7 @@ namespace FallingSand.Scripts {
             panelRT.anchorMin = new Vector2(1f, 1f);
             panelRT.anchorMax = new Vector2(1f, 1f);
             panelRT.pivot = new Vector2(1f, 1f);
-            panelRT.anchoredPosition = new Vector2(-8, -44);
+            panelRT.anchoredPosition = new Vector2(-8, -76);
             panelRT.sizeDelta = new Vector2(_settingsPanelWidth, 0);
 
             var vlg = _settingsPanel.AddComponent<VerticalLayoutGroup>();
@@ -393,6 +490,16 @@ namespace FallingSand.Scripts {
 
         // ---- Utilities ----
 
+        private Sprite GetCategoryIcon(MaterialCategory cat) => cat switch {
+            MaterialCategory.Solids  => _iconSolids,
+            MaterialCategory.Powders => _iconPowders,
+            MaterialCategory.Liquids => _iconLiquids,
+            MaterialCategory.Gases   => _iconGases,
+            MaterialCategory.Energy  => _iconEnergy,
+            MaterialCategory.Life    => _iconLife,
+            _ => null,
+        };
+
         private static Color GetLabelColor(Color bg) {
             var lum = 0.299f * bg.r + 0.587f * bg.g + 0.114f * bg.b;
             return lum > 0.5f ? Color.black : Color.white;
@@ -461,6 +568,26 @@ namespace FallingSand.Scripts {
             var img = go.GetComponent<Image>();
             img.color = color;
             return go;
+        }
+
+        private static Button CreateIconButton(Transform parent, Color bgColor, Vector2 size, Sprite icon, string name, Action onClick) {
+            var btn = CreateButton(parent, bgColor, size, onClick);
+            btn.gameObject.name = name;
+
+            var iconGO = new GameObject("Icon", typeof(RectTransform), typeof(CanvasRenderer), typeof(Image));
+            iconGO.transform.SetParent(btn.transform, false);
+            var iconRT = iconGO.GetComponent<RectTransform>();
+            iconRT.anchorMin = new Vector2(0.15f, 0.15f);
+            iconRT.anchorMax = new Vector2(0.85f, 0.85f);
+            iconRT.offsetMin = Vector2.zero;
+            iconRT.offsetMax = Vector2.zero;
+
+            var iconImg = iconGO.GetComponent<Image>();
+            iconImg.sprite = icon;
+            iconImg.preserveAspect = true;
+            iconImg.raycastTarget = false;
+
+            return btn;
         }
 
         private static Button CreateButton(Transform parent, Color color, Vector2 size, Action onClick) {

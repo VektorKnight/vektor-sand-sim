@@ -116,7 +116,15 @@ namespace FallingSand.Scripts {
         // Deferred recreation flag.
         private bool _pendingRecreate;
 
+        // Pause state.
+        private bool _paused;
+
         // --- Public API ---
+
+        public bool Paused {
+            get => _paused;
+            set => _paused = value;
+        }
 
         public IReadOnlyList<MaterialDefinition> Materials => MaterialTable.Materials;
         public SandLightingController Lighting => _lighting;
@@ -548,29 +556,31 @@ namespace FallingSand.Scripts {
 
             // Bind SimConfig cbuffer to all compute shaders.
             var simConfigSize = Marshal.SizeOf<SandBindings.SimConfigBuffer>();
-            
+
             _cmd.SetComputeConstantBufferParam(_compute, SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, simConfigSize);
             _cmd.SetComputeConstantBufferParam(_lighting.Compute, SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, simConfigSize);
             _cmd.SetComputeConstantBufferParam(_visCompute, SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, simConfigSize);
 
-            // Bind structured buffers to sim kernels.
-            _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_SIM_DATA, _simData);
-            _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_MATERIAL_TABLE, _materialBuffer);
-            _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_REACTION_TABLE, _reactionBuffer);
-            _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_DECAY_TABLE, _decayBuffer);
-            _cmd.SetComputeBufferParam(_compute, KERNEL_SIM, SandBindings.ID_SIM_DATA, _simData);
-            _cmd.SetComputeBufferParam(_compute, KERNEL_SIM, SandBindings.ID_MATERIAL_TABLE, _materialBuffer);
+            if (!_paused) {
+                // Bind structured buffers to sim kernels.
+                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_SIM_DATA, _simData);
+                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_MATERIAL_TABLE, _materialBuffer);
+                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_REACTION_TABLE, _reactionBuffer);
+                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_DECAY_TABLE, _decayBuffer);
+                _cmd.SetComputeBufferParam(_compute, KERNEL_SIM, SandBindings.ID_SIM_DATA, _simData);
+                _cmd.SetComputeBufferParam(_compute, KERNEL_SIM, SandBindings.ID_MATERIAL_TABLE, _materialBuffer);
 
-            // PrepareFrame (conditional on accumulator).
-            _prepareFrameAccum += Time.unscaledDeltaTime;
-            if (_prepareFrameAccum >= 1f / 60f) {
-                _prepareFrameAccum -= 1f / 60f;
-                if (_prepareFrameAccum >= 1f / 60f) _prepareFrameAccum = 0f;
-                RecordPrepareCommands(_cmd);
+                // PrepareFrame (conditional on accumulator).
+                _prepareFrameAccum += Time.unscaledDeltaTime;
+                if (_prepareFrameAccum >= 1f / 60f) {
+                    _prepareFrameAccum -= 1f / 60f;
+                    if (_prepareFrameAccum >= 1f / 60f) _prepareFrameAccum = 0f;
+                    RecordPrepareCommands(_cmd);
+                }
+
+                // Simulate loop.
+                RecordSimulateCommands(_cmd);
             }
-
-            // Simulate loop.
-            RecordSimulateCommands(_cmd);
 
             // Lighting (conditional on cadence and enabled).
             var cursorPos = Input.mousePosition;
@@ -589,8 +599,10 @@ namespace FallingSand.Scripts {
             // Execute.
             Graphics.ExecuteCommandBuffer(_cmd);
 
-            _simFrame++;
-            _stepOffset = (_stepOffset + _effectiveSteps) % _baseSimSteps;
+            if (!_paused) {
+                _simFrame++;
+                _stepOffset = (_stepOffset + _effectiveSteps) % _baseSimSteps;
+            }
 
             Profiler.EndSample();
         }

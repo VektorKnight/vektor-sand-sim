@@ -2,13 +2,24 @@ using System;
 using UnityEngine;
 
 namespace FallingSand.Scripts {
+    public enum MaterialCategory {
+        Solids,
+        Powders,
+        Liquids,
+        Gases,
+        Energy,
+        Life,
+    }
+
     /// <summary>
     /// Material definition. Converted to MaterialProperties for the GPU.
     /// </summary>
     [Serializable]
     public class MaterialDefinition {
         public string Name = "Material";
+        public string Label = "";
         public string Description = "";
+        public MaterialCategory Category = MaterialCategory.Solids;
 
         /// <summary>
         /// Solids are zero, anything greater is a progressively less viscous fluid / gas.

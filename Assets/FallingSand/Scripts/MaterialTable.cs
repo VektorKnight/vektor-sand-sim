@@ -90,61 +90,70 @@ namespace FallingSand.Scripts {
         public static IReadOnlyList<DecayRule> Decay => _decay;
 
         private static readonly List<MaterialDefinition> _materials = new() {
-            new() { Name = "Empty" },
+            new() { Name = "Empty", Label = "EMPT" },
 
             // Solids
             new() {
-                Name = "Bedrock", Description = "Indestructible. Nothing affects it.",
+                Name = "Bedrock", Label = "BDRK", Category = MaterialCategory.Solids,
+                Description = "Indestructible. Nothing affects it.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
                 Variation = 0.15f, Opacity = 1.5f,
                 Color = new Color(0.28f, 0.26f, 0.32f),
             },
             new() {
-                Name = "Stone", Description = "Solid. Dissolved by acid, melted by plasma.",
+                Name = "Stone", Label = "STNE", Category = MaterialCategory.Solids,
+                Description = "Solid. Dissolved by acid, melted by plasma.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
                 Variation = 0.25f, Opacity = 1f,
                 Color = new Color(0.42f, 0.38f, 0.35f),
             },
             new() {
-                Name = "Glass", Description = "Transparent solid. Made from sand and lava.",
+                Name = "Glass", Label = "GLAS", Category = MaterialCategory.Solids,
+                Description = "Transparent solid. Made from sand and lava.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
                 Variation = 0.1f, Opacity = 0.01f,
                 Color = new Color(0.7f, 0.85f, 0.9f, 0.5f),
             },
             new() {
-                Name = "Wood", Description = "Solid. Burns slowly, ignited by fire, lava, or ember.",
+                Name = "Wood", Label = "WOOD", Category = MaterialCategory.Solids,
+                Description = "Solid. Burns slowly, ignited by fire, lava, or ember.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
                 Variation = 0.3f, Opacity = 1.5f,
                 Color = new Color(0.45f, 0.28f, 0.12f),
             },
             new() {
-                Name = "Ice", Description = "Transparent solid. Melts in water and fire.",
+                Name = "Ice", Label = "ICE", Category = MaterialCategory.Solids,
+                Description = "Transparent solid. Melts in water and fire.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
                 Variation = 0.5f, Opacity = 0.06f,
                 Color = new Color(0.4f, 0.75f, 0.85f, 0.6f),
             },
 
-            // Granulars
+            // Powders
             new() {
-                Name = "Sand", Description = "Light granular. Melted into glass by lava.",
+                Name = "Sand", Label = "SAND", Category = MaterialCategory.Powders,
+                Description = "Light granular. Melted into glass by lava.",
                 Fluidity = 0, Density = 160, Weight = 128, Drag = 128,
                 Variation = 0.5f, Opacity = 0.7f,
                 Color = new Color(0.8207547f, 0.5865165f, 0.32907617f),
             },
             new() {
-                Name = "Gravel", Description = "Heavy granular. Slowly melted by lava.",
+                Name = "Gravel", Label = "GRVL", Category = MaterialCategory.Powders,
+                Description = "Heavy granular. Slowly melted by lava.",
                 Fluidity = 0, Density = 200, Weight = 128, Drag = 96,
                 Variation = 0.25f, Opacity = 1f,
                 Color = new Color(0.45f, 0.44f, 0.42f),
             },
             new() {
-                Name = "Snow", Description = "Light powder. Melts in water, freezes on ice.",
+                Name = "Snow", Label = "SNOW", Category = MaterialCategory.Powders,
+                Description = "Light powder. Melts in water, freezes on ice.",
                 Fluidity = 1, Density = 50, Weight = 128, Drag = 192,
                 Variation = 0.5f, Opacity = 0.04f,
                 Color = new Color(0.75f, 0.84f, 0.95f),
             },
             new() {
-                Name = "Gunpowder", Description = "Flammable granular. Ignites almost instantly.",
+                Name = "Gunpowder", Label = "GNPD", Category = MaterialCategory.Powders,
+                Description = "Flammable granular. Ignites almost instantly.",
                 Fluidity = 0, Density = 160, Weight = 128, Drag = 128,
                 Variation = 0.15f, Opacity = 1f,
                 Color = new Color(0.27f, 0.25f, 0.22f),
@@ -152,19 +161,22 @@ namespace FallingSand.Scripts {
 
             // Liquids
             new() {
-                Name = "Water", Description = "Fluid. Extinguishes fire, boils on lava.",
+                Name = "Water", Label = "WATR", Category = MaterialCategory.Liquids,
+                Description = "Fluid. Extinguishes fire, boils on lava.",
                 Fluidity = 255, Density = 100, Weight = 96, Drag = 128,
                 Variation = 0.1f, Opacity = 0.01f,
                 Color = new Color(0.14509802f, 0.36678076f, 0.7921569f, 0.7f),
             },
             new() {
-                Name = "Oil", Description = "Viscous fluid. Floats on water, flammable.",
+                Name = "Oil", Label = "OIL", Category = MaterialCategory.Liquids,
+                Description = "Viscous fluid. Floats on water, flammable.",
                 Fluidity = 64, Density = 70, Weight = 80, Drag = 128,
                 Variation = 0.1f, Opacity = 0.1f,
                 Color = new Color(0.43529412f, 0.29143146f, 0.23529412f),
             },
             new() {
-                Name = "Acid", Description = "Corrosive fluid. Dissolves most solids. Neutralized by water.",
+                Name = "Acid", Label = "ACID", Category = MaterialCategory.Liquids,
+                Description = "Corrosive fluid. Dissolves most solids. Neutralized by water.",
                 Fluidity = 200, Density = 110, Weight = 96, Drag = 128,
                 Variation = 0.2f, Opacity = 0.08f,
                 EmissionColor = new Color(0.2f, 1f, 0.1f),
@@ -172,7 +184,8 @@ namespace FallingSand.Scripts {
                 Color = new Color(0.3f, 0.85f, 0.15f, 0.8f),
             },
             new() {
-                Name = "Lava", Description = "Hot viscous fluid. Ignites flammables, melts sand into glass.",
+                Name = "Lava", Label = "LAVA", Category = MaterialCategory.Liquids,
+                Description = "Hot viscous fluid. Ignites flammables, melts sand into glass.",
                 Fluidity = 8, Density = 190, Weight = 128, Drag = 192,
                 Variation = 0.1f, Opacity = 0.4f,
                 EmissionColor = new Color(1f, 0.4f, 0.1f),
@@ -180,9 +193,10 @@ namespace FallingSand.Scripts {
                 Color = new Color(0.75f, 0.12f, 0.02f),
             },
 
-            // Hot
+            // Energy
             new() {
-                Name = "Fire", Description = "Hot, ignites flammables, burns out into ember.",
+                Name = "Fire", Label = "FIRE", Category = MaterialCategory.Energy,
+                Description = "Hot, ignites flammables, burns out into ember.",
                 Fluidity = 1, Density = 5, Weight = -16, Drag = 120,
                 Variation = 0.8f, Opacity = 0.05f,
                 EmissionColor = new Color(1f, 0.6f, 0.1f),
@@ -190,7 +204,8 @@ namespace FallingSand.Scripts {
                 Color = new Color(1f, 0.35f, 0f),
             },
             new() {
-                Name = "Ember", Description = "Slow falling. Ignites flammables, decays to smoke.",
+                Name = "Ember", Label = "EMBR", Category = MaterialCategory.Energy,
+                Description = "Slow falling. Ignites flammables, decays to smoke.",
                 Fluidity = 2, Density = 30, Weight = 32, Drag = 220,
                 Variation = 0.6f, Opacity = 0.3f,
                 EmissionColor = new Color(1f, 0.4f, 0.05f),
@@ -198,7 +213,8 @@ namespace FallingSand.Scripts {
                 Color = new Color(0.8f, 0.25f, 0.02f),
             },
             new() {
-                Name = "Plasma", Description = "Extremely hot. Melts and burns almost everything.",
+                Name = "Plasma", Label = "PLSM", Category = MaterialCategory.Energy,
+                Description = "Extremely hot. Melts and burns almost everything.",
                 Fluidity = 32, Density = 3, Weight = -32, Drag = 100,
                 Variation = 0.2f, Opacity = 0.03f,
                 EmissionColor = new Color(0.5f, 0.3f, 1f),
@@ -208,29 +224,31 @@ namespace FallingSand.Scripts {
 
             // Gases
             new() {
-                Name = "Steam", Description = "Buoyant gas. Condenses on cold surfaces.",
+                Name = "Steam", Label = "STEM", Category = MaterialCategory.Gases,
+                Description = "Buoyant gas. Condenses on cold surfaces.",
                 Fluidity = 64, Density = 10, Weight = -32, Drag = 220,
                 Variation = 0.3f, Opacity = 0.02f,
                 Color = new Color(0.7f, 0.85f, 0.9f, 0.3f),
             },
             new() {
-                Name = "Smoke", Description = "Buoyant gas. Dissipates over time.",
+                Name = "Smoke", Label = "SMKE", Category = MaterialCategory.Gases,
+                Description = "Buoyant gas. Dissipates over time.",
                 Fluidity = 128, Density = 8, Weight = -32, Drag = 128,
                 Variation = 0.2f, Opacity = 0.05f,
                 Color = new Color(0.2f, 0.2f, 0.15f, 0.7f),
             },
 
-            // Organic
+            // Life
             new() {
-                Name = "Algae", Description = "Grows on water. Decays into sludge.",
+                Name = "Algae", Label = "ALGE", Category = MaterialCategory.Life,
+                Description = "Grows on water. Decays into sludge.",
                 Fluidity = 4, Density = 60, Weight = 64, Drag = 192,
                 Variation = 0.4f, Opacity = 0.04f,
                 Color = new Color(0.15f, 0.45f, 0.1f),
             },
-            
-            // Mixtures
             new() {
-                Name = "Sludge", Description = "Dead biomass. Burns slowly.",
+                Name = "Sludge", Label = "SLDG", Category = MaterialCategory.Life,
+                Description = "Dead biomass. Burns slowly.",
                 Fluidity = 8, Density = 150, Weight = 96, Drag = 200,
                 Variation = 0.2f, Opacity = 0.8f,
                 Color = new Color(0.3f, 0.22f, 0.12f),

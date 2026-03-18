@@ -37,3 +37,4 @@ crashlytics-build.properties
 /memory
 /Assets/_Recovery
 *.blob
+/Assets/_Recovery
