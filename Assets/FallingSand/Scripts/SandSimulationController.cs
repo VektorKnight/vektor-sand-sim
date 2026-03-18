@@ -66,6 +66,7 @@ namespace FallingSand.Scripts {
         [SerializeField] private SandLightingController _lighting;
         [SerializeField] private ComputeShader _visCompute;
         [SerializeField] private Gradient _heatGradient;
+        [SerializeField] private Gradient _blackbodyGradient;
 
         // GPU-side interaction structs. Must match SandUtil.hlsl layout.
         [StructLayout(LayoutKind.Sequential)]
@@ -426,8 +427,7 @@ namespace FallingSand.Scripts {
         }
 
         private void Reset() {
-            // Called by Unity when the component is first added or reset.
-            // Thanks Claude for the fancy gradient I couldn't be bothered to make by hand.
+            // Nice gradient for the heat view mode.
             _heatGradient = new Gradient();
             _heatGradient.SetKeys(
                 new[] {
@@ -445,20 +445,45 @@ namespace FallingSand.Scripts {
                     new GradientAlphaKey(1f, 1f),
                 }
             );
+
+            // Stylized blackbody emission curve.
+            _blackbodyGradient = new Gradient();
+            _blackbodyGradient.SetKeys(
+                new[] {
+                    new GradientColorKey(new Color(0.00f, 0.00f, 0.00f), 0.00f),
+                    new GradientColorKey(new Color(0.00f, 0.00f, 0.00f), 0.26f),
+                    new GradientColorKey(new Color(0.25f, 0.02f, 0.00f), 0.28f),
+                    new GradientColorKey(new Color(0.70f, 0.08f, 0.02f), 0.32f),
+                    new GradientColorKey(new Color(1.00f, 0.45f, 0.05f), 0.38f),
+                    new GradientColorKey(new Color(1.00f, 0.90f, 0.70f), 0.50f),
+                    new GradientColorKey(new Color(0.80f, 0.85f, 1.00f), 0.72f),
+                    new GradientColorKey(new Color(0.65f, 0.75f, 1.00f), 1.00f),
+                },
+                new[] {
+                    new GradientAlphaKey(1f, 0f),
+                    new GradientAlphaKey(1f, 1f),
+                }
+            );
         }
 
         private void BakeHeatGradient() {
             const int width = 256;
-            _heatGradTexture = new Texture2D(width, 1, TextureFormat.RGBA32, false) {
+            _heatGradTexture = new Texture2D(width, 2, TextureFormat.RGBA32, false) {
                 wrapMode = TextureWrapMode.Clamp,
                 filterMode = FilterMode.Bilinear,
             };
 
-            var pixels = new Color[width];
-            for (var i = 0; i < width; i++)
-                pixels[i] = _heatGradient.Evaluate((float)i / (width - 1));
+            // Row 0: heat view gradient. Row 1: blackbody emission.
+            var heatRow = new Color[width];
+            var bbRow = new Color[width];
+            for (var i = 0; i < width; i++) {
+                var t = (float)i / (width - 1);
+                heatRow[i] = _heatGradient.Evaluate(t);
+                bbRow[i] = _blackbodyGradient.Evaluate(t);
+            }
 
-            _heatGradTexture.SetPixels(pixels);
+            _heatGradTexture.SetPixels(0, 0, width, 1, heatRow);
+            _heatGradTexture.SetPixels(0, 1, width, 1, bbRow);
             _heatGradTexture.Apply();
         }
 
@@ -686,7 +711,8 @@ namespace FallingSand.Scripts {
             // Lighting.
             if (!_heatView) {
                 _lighting.Record(
-                    _cmd, _simData, _simHeat, _materialBuffer,
+                    _cmd, _simData, _simHeat,
+                    _materialBuffer, _heatGradTexture,
                     _lightTexture, _lightTextureTemp,
                     _simFrame
                 );
@@ -827,6 +853,7 @@ namespace FallingSand.Scripts {
                 cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS, SandBindings.ID_SIM_HEAT, _simHeat);
                 cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS, SandBindings.ID_MATERIALS, _materialBuffer);
                 cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_VIS_TEXTURE, _visTexture);
+                cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_HEAT_GRAD, _heatGradTexture);
                 cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_LIGHT_TEXTURE_READ, _lightTexture);
 
                 var bloomTexture = _lighting.BloomTexture;

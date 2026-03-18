@@ -57,12 +57,12 @@ namespace FallingSand.Scripts {
         public static GpuMaterialDefinition FromDefinition(MaterialDefinition def) {
             var linear = def.Color.linear;
 
-            // Derive per-channel extinction from opacity and color.
-            // opacity * (1 - color_linear) gives nice tinted shadows.
+            // Derive per-channel extinction from alpha and color.
+            // alpha * (1 - color_linear) gives nice tinted shadows.
             var ext = new float4(
-                def.Opacity * (1f - linear.r),
-                def.Opacity * (1f - linear.g),
-                def.Opacity * (1f - linear.b),
+                linear.a * (1f - linear.r),
+                linear.a * (1f - linear.g),
+                linear.a * (1f - linear.b),
                 0f
             );
 

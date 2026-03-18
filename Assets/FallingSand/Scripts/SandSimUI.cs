@@ -144,7 +144,8 @@ namespace FallingSand.Scripts {
             for (var i = 1; i < mats.Count; i++) {
                 var idx = i;
                 var mat = mats[i];
-                var btn = CreateButton(matPanel.transform, mat.Color, _matCellSize, () => {
+                var btnColor = new Color(mat.Color.r, mat.Color.g, mat.Color.b, 1f);
+                var btn = CreateButton(matPanel.transform, btnColor, _matCellSize, () => {
                     _sim.SelectedMaterialIndex = idx;
                     SaveSettings();
                 });

@@ -30,8 +30,8 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
         }
     }
 
-    // Empty cells still receive bloom glow (additive via premultiplied alpha).
     if (is_empty(cell)) {
+        // Empty cells receive bloom glow additively over the background (premultiplied alpha).
         float3 bloom = 0;
         if (LightEnabled && BloomIntensity > 0) {
             const float2 uv = (float2(id.xy) + 0.5) / float2(Dimensions.xy);
@@ -58,7 +58,7 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
     // Additive on top of the base material + lighting, same as static emission was.
     base_color += blackbody_emission(get_heat(id.xy));
 
-    _VisTexture[id.xy] = float4(base_color * mat.color.a, mat.color.a);
+    _VisTexture[id.xy] = float4(base_color, 1);
 }
 
 // ============================================================================
@@ -94,7 +94,7 @@ void VisualizeHeat(uint3 id : SV_DispatchThreadID) {
 
     const float heat = get_heat(id.xy);
     const float t = saturate((heat - MIN_TEMP) / (MAX_TEMP - MIN_TEMP));
-    const float3 color = _HeatRamp.SampleLevel(sampler_HeatRamp, float2(t, 0.5), 0).rgb;
+    const float3 color = _HeatRamp.SampleLevel(sampler_HeatRamp, float2(t, 0.25), 0).rgb;
 
     _VisTexture[id.xy] = float4(color, 1);
 }

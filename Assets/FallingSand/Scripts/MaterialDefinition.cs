@@ -57,13 +57,6 @@ namespace FallingSand.Scripts {
         public float Variation = 0f;
 
         /// <summary>
-        /// How opaque the material is to light. 0 = fully transparent, higher = denser.
-        /// Per-channel extinction is derived from color on the CPU side.
-        /// </summary>
-        [Range(0f, 10f)]
-        public float Opacity = 1f;
-
-        /// <summary>
         /// Self-illumination color. Combined with EmissionIntensity to produce
         /// light that is added after shading, so emissive materials glow even in shadow.
         /// </summary>
@@ -104,7 +97,6 @@ namespace FallingSand.Scripts {
                 Weight = 0,
                 Drag = 0,
                 Variation = 0f,
-                Opacity = 0f,
                 EmissionColor = Color.black,
                 EmissionIntensity = 0f,
                 Color = Color.clear,

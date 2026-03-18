@@ -160,7 +160,7 @@ namespace FallingSand.Scripts {
         public void Record(
             CommandBuffer cmd,
             ComputeBuffer simData, ComputeBuffer simHeat,
-            ComputeBuffer materialBuffer,
+            ComputeBuffer materialBuffer, Texture2D heatRamp,
             RenderTexture lightTexture, RenderTexture lightTextureTemp,
             int simFrame
         ) {
@@ -218,6 +218,7 @@ namespace FallingSand.Scripts {
             cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_SIM_DATA, simData);
             cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_SIM_HEAT, simHeat);
             cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_MATERIALS, materialBuffer);
+            cmd.SetComputeTextureParam(_compute, KERNEL_EMISSION, SandBindings.ID_HEAT_GRAD, heatRamp);
             cmd.SetComputeTextureParam(_compute, KERNEL_EMISSION, SandBindings.ID_LIGHT_TEXTURE, lightTexture);
             cmd.DispatchCompute(_compute, KERNEL_EMISSION, lightGroupsX, lightGroupsY, 1);
 
@@ -234,6 +235,7 @@ namespace FallingSand.Scripts {
                 cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_SIM_DATA, simData);
                 cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_SIM_HEAT, simHeat);
                 cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_MATERIALS, materialBuffer);
+                cmd.SetComputeTextureParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_HEAT_GRAD, heatRamp);
                 cmd.SetComputeTextureParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_BLOOM_TEXTURE, _bloomTexture);
                 cmd.DispatchCompute(_compute, KERNEL_BLOOM_GATHER, lightGroupsX, lightGroupsY, 1);
 

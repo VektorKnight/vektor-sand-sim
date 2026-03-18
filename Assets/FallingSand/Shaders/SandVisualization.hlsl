@@ -65,31 +65,9 @@ float3 tonemap_bloom(float3 c) {
     return c * (mapped / lum);
 }
 
-// Attempt at a blackbody radiation approximation.
-// Based on Tanner Helland's fit, adapted for Celsius input.
-// Returns RGB color and intensity that ramps up from ~500C (dull red glow) to white-hot.
+// Sample the blackbody emission ramp (row 1 of _HeatRamp) for a given temperature.
+// Uses sqrt mapping matching the heat view gradient.
 float3 blackbody_emission(float temp_celsius) {
-    // No visible glow below ~500C.
-    if (temp_celsius < 500.0) return 0;
-
-    const float t = (temp_celsius + 273.0) / 100.0; // hectokelvin
-
-    float3 color;
-
-    // Red.
-    color.r = (t <= 66.0) ? 1.0 : saturate(1.292 * pow(t - 60.0, -0.1332));
-
-    // Green.
-    color.g = (t <= 66.0) ? saturate(0.39 * log(t) - 0.632)
-                           : saturate(1.129 * pow(t - 60.0, -0.0755));
-
-    // Blue.
-    if (t <= 19.0)       color.b = 0.0;
-    else if (t <= 66.0)  color.b = saturate(0.543 * log(t - 10.0) - 1.196);
-    else                 color.b = 1.0;
-
-    // Intensity ramps from 0 at 500C to full at ~2000C.
-    const float intensity = saturate((temp_celsius - 500.0) / 1500.0);
-
-    return color * intensity * intensity;
+    const float linear_t = saturate((temp_celsius - MIN_TEMP) / (MAX_TEMP - MIN_TEMP));
+    return _HeatRamp.SampleLevel(sampler_HeatRamp, float2(sqrt(linear_t), 0.75), 0).rgb;
 }
