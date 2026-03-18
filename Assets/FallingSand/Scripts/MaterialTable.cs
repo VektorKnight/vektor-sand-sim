@@ -96,7 +96,7 @@ namespace FallingSand.Scripts {
         public static IReadOnlyList<DecayRule> Decay => _decay;
 
         private static readonly List<MaterialDefinition> _materials = new() {
-            new() { Name = "Empty", Label = "EMPT", Conductivity = 0f, HeatCapacity = 0.01f },
+            new() { Name = "Empty", Label = "NONE", Conductivity = 0f, HeatCapacity = 0.01f },
 
             // Solids
             new() {
@@ -256,7 +256,7 @@ namespace FallingSand.Scripts {
                 Name = "Smoke", Label = "SMKE", Category = MaterialCategory.Gases,
                 Description = "Buoyant gas. Dissipates over time.",
                 Fluidity = 128, Density = 8, Weight = -32, Drag = 128,
-                InitialTemp = 200f, Conductivity = 0.03f, HeatCapacity = 0.3f,
+                InitialTemp = 200f, Conductivity = 0.001f, HeatCapacity = 0.3f,
                 Variation = 0.2f,
                 Color = new Color(0.2f, 0.2f, 0.15f, 0.05f),
             },
