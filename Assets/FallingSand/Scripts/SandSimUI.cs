@@ -9,7 +9,7 @@ namespace FallingSand.Scripts {
     /// Programmatic uGUI for the falling-sand simulation.
     /// Attach to the Canvas and assign the SandSimulation reference.
     ///
-    /// Claude largely handled this. I hate UI. Thanks, Claude!
+    /// Claude largely handles this. I hate UI. Thanks, Claude!
     /// </summary>
     public class SandSimUI : MonoBehaviour {
         [SerializeField] private SandSimulationController _sim;
@@ -48,6 +48,9 @@ namespace FallingSand.Scripts {
         private readonly List<int> _matOutlineIndices = new();
         private GameObject _settingsPanel;
         private bool _settingsOpen;
+        private Text _debugText;
+        private RectTransform _debugRT;
+        private float _uiScale = 1f;
 
         // Color slider refs for live update.
         private Toggle _lightToggle, _bloomToggle;
@@ -66,6 +69,7 @@ namespace FallingSand.Scripts {
             BuildMaterialBar();
             BuildSettingsPanel();
             BuildHUD();
+            ApplyUIScale();
         }
 
         private void OnApplicationQuit() => SaveSettings();
@@ -76,12 +80,35 @@ namespace FallingSand.Scripts {
                 _matOutlines[i].enabled = _matOutlineIndices[i] == _sim.SelectedMaterialIndex;
             }
 
+            // Sync pause button icon with state (may change via spacebar).
+            if (_pauseButtonImage)
+                _pauseButtonImage.sprite = _sim.Paused ? _playIcon : _pauseIcon;
+
             // Refresh HUD.
             if (_hudText) {
                 var matName = _sim.Materials[_sim.SelectedMaterialIndex].Name;
                 var mode = _sim.PaintReplace ? "Replace" : "Fill";
                 var paused = _sim.Paused ? " | Paused" : "";
-                _hudText.text = $"{_sim.FPS} FPS | Steps {_sim.EffectiveSteps}/{_sim.BaseSimSteps}{paused}\nSim {_sim.SimWidth}x{_sim.SimHeight} | Light {_sim.LightWidth}x{_sim.LightHeight}\n{matName} ({mode})";
+                var view = _sim.HeatView ? " | Heat" : "";
+                _hudText.text = $"{_sim.FPS} FPS | Steps {_sim.EffectiveSteps}/{_sim.BaseSimSteps}{paused}{view}\nSim {_sim.SimWidth}x{_sim.SimHeight} | Light {_sim.LightWidth}x{_sim.LightHeight}\n{matName} ({mode})";
+            }
+
+            // Debug tooltip follows cursor.
+            if (_debugText) {
+                _debugText.gameObject.SetActive(_sim.DebugReadback);
+                if (_sim.DebugReadback) {
+                    var cell = _sim.CursorCell;
+                    var cellMatId = (int)(cell & 0x1F);
+                    var cellMatName = cellMatId < _sim.Materials.Count ? _sim.Materials[cellMatId].Name : "?";
+                    var cellFlags = (cell >> 5) & 0x7;
+                    var flags = $"{((cellFlags >> 2) & 1)}{((cellFlags >> 1) & 1)}{(cellFlags & 1)}";
+                    var cellXVel = (int)(cell << 16) >> 24;
+                    var cellYVel = (int)(cell << 8) >> 24;
+                    var cellVariant = (cell >> 24) & 0x3;
+                    _debugText.text = $"{cellMatName} (ID:{cellMatId})\nFlags:{flags} Vel:({cellXVel},{cellYVel}) Var:{cellVariant}\n{_sim.CursorTemp:F1}C";
+
+                    _debugRT.position = Input.mousePosition + new Vector3(16, 16, 0);
+                }
             }
         }
 
@@ -339,6 +366,13 @@ namespace FallingSand.Scripts {
                 (int)_sim.FrameCap,
                 idx => { _sim.FrameCap = (SandSimulationController.FrameRateCap)idx; SaveSettings(); });
 
+            // UI Scale.
+            CreateSlider(_settingsPanel.transform, "UI Scale", 0.5f, 2f, _uiScale, v => {
+                _uiScale = v;
+                ApplyUIScale();
+                SaveSettings();
+            });
+
             // Clear simulation.
             var clearBtn = CreateButton(_settingsPanel.transform, new Color(0.3f, 0.15f, 0.15f), new Vector2(0, _settingsRowHeight), () => _sim.RecreateSimulation());
             var clearLE = clearBtn.gameObject.AddComponent<LayoutElement>();
@@ -353,6 +387,10 @@ namespace FallingSand.Scripts {
             clearLabelRT.offsetMax = Vector2.zero;
 
             _settingsPanel.SetActive(false);
+        }
+
+        private void ApplyUIScale() {
+            transform.localScale = Vector3.one * _uiScale;
         }
 
         private void ApplyLightColor() {
@@ -396,8 +434,23 @@ namespace FallingSand.Scripts {
             rt.anchorMax = new Vector2(0f, 1f);
             rt.pivot = new Vector2(0f, 1f);
             rt.anchoredPosition = new Vector2(8, -8);
-            rt.sizeDelta = new Vector2(300, 60);
+            rt.sizeDelta = new Vector2(500, 80);
             _hudText.raycastTarget = false;
+
+            // Debug tooltip (follows cursor, hidden by default).
+            _debugText = CreateText(transform, "", _hudFontSize, TextAnchor.UpperLeft);
+            _debugText.raycastTarget = false;
+            _debugRT = _debugText.GetComponent<RectTransform>();
+            _debugRT.anchorMin = Vector2.zero;
+            _debugRT.anchorMax = Vector2.zero;
+            _debugRT.pivot = new Vector2(0f, 0f);
+            _debugRT.sizeDelta = new Vector2(300, 60);
+            _debugText.gameObject.SetActive(false);
+
+            // Drop shadow for readability.
+            var shadow = _debugText.gameObject.AddComponent<Shadow>();
+            shadow.effectColor = Color.black;
+            shadow.effectDistance = new Vector2(1, -1);
         }
 
         // ---- JSON file persistence ----
@@ -418,6 +471,7 @@ namespace FallingSand.Scripts {
             public int frameCap;
             public int paintRadius = 5;
             public int selectedMat = 1;
+            public float uiScale = 1f;
         }
 
         private static string GetSettingsPath() {
@@ -456,6 +510,7 @@ namespace FallingSand.Scripts {
                 _sim.FrameCap = (SandSimulationController.FrameRateCap)Mathf.Clamp(s.frameCap, 0, 1);
                 _sim.PaintRadius = s.paintRadius; // Setter already clamps to min/max.
                 _sim.SelectedMaterialIndex = s.selectedMat; // Setter already clamps to valid range.
+                _uiScale = Mathf.Clamp(s.uiScale, 0.5f, 2f);
             } catch (System.Exception e) {
                 Debug.LogWarning($"Failed to load settings: {e.Message}");
             }
@@ -479,6 +534,7 @@ namespace FallingSand.Scripts {
                 frameCap = (int)_sim.FrameCap,
                 paintRadius = _sim.PaintRadius,
                 selectedMat = _sim.SelectedMaterialIndex,
+                uiScale = _uiScale,
             };
 
             try {

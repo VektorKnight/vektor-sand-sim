@@ -6,6 +6,7 @@
 // ============================================================================
 
 #pragma kernel Visualize
+#pragma kernel VisualizeHeat
 
 [numthreads(8,8,1)]
 void Visualize(uint3 id : SV_DispatchThreadID) {
@@ -46,15 +47,54 @@ void Visualize(uint3 id : SV_DispatchThreadID) {
     const float offset = ((float)get_variant(cell) - 1.5) * (mat.variation / 10);
     float3 base_color = float3(saturate(mat.color.rgb + offset));
 
-    // Sample combined light + emission buffer.
+    // Sample combined light and emission buffer.
     if (LightEnabled) {
         const float2 uv = (float2(id.xy) + 0.5) / float2(Dimensions.xy);
         base_color *= _LightTextureRead.SampleLevel(sampler_LightTextureRead, uv, 0).rgb;
         base_color += tonemap_bloom(_BloomTextureRead.SampleLevel(sampler_BloomTextureRead, uv, 0).rgb) * BloomIntensity;
     }
 
-    // Self-illumination added after lighting so emissive materials glow.
-    base_color += mat.emission.rgb;
+    // Blackbody emission from temperature — hot materials glow dull red through white.
+    // Additive on top of the base material + lighting, same as static emission was.
+    base_color += blackbody_emission(get_heat(id.xy));
 
     _VisTexture[id.xy] = float4(base_color * mat.color.a, mat.color.a);
+}
+
+// ============================================================================
+// Heat visualization. Samples a gradient based on cell temperature.
+// TODO: Difficult to see cold materials against the background. Add an outline?
+// ============================================================================
+[numthreads(8,8,1)]
+void VisualizeHeat(uint3 id : SV_DispatchThreadID) {
+    if (id.x >= Dimensions.x || id.y >= Dimensions.y) {
+        return;
+    }
+
+    const uint cell = get_cell_data(id.xy);
+
+    // Cursor ring.
+    if (CursorRadius > 0) {
+        const int dx = (int)id.x - CursorPos.x;
+        const int dy = (int)id.y - CursorPos.y;
+        const int d2 = dx * dx + dy * dy;
+        const int r_inner = (int)CursorRadius - 1;
+
+        if (d2 <= (int)(CursorRadius * CursorRadius) && d2 >= r_inner * r_inner) {
+            _VisTexture[id.xy] = float4(1, 1, 1, 1);
+            return;
+        }
+    }
+
+    // Make empty cells a dark gray in heat view to contrast darker, colder regions from the background.
+    if (is_empty(cell)) {
+        _VisTexture[id.xy] = float4(0.01, 0.01, 0.01, 1);
+        return;
+    }
+
+    const float heat = get_heat(id.xy);
+    const float t = saturate((heat - MIN_TEMP) / (MAX_TEMP - MIN_TEMP));
+    const float3 color = _HeatRamp.SampleLevel(sampler_HeatRamp, float2(t, 0.5), 0).rgb;
+
+    _VisTexture[id.xy] = float4(color, 1);
 }

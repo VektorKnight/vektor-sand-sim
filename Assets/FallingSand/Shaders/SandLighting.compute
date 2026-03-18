@@ -69,9 +69,13 @@ void Emission(uint3 id : SV_DispatchThreadID) {
 
             if (!in_bounds(pos)) break;
 
-            const MaterialProperties mat_pos = get_mat_props(get_cell_data(pos));
+            const uint ec = get_cell_data(pos);
+            if (is_empty(ec)) continue;
 
-            total += mat_pos.emission.rgb * transmittance / (1.0 + dist);
+            const MaterialProperties mat_pos = get_mat_props(ec);
+            const float3 em = mat_pos.emission.rgb + blackbody_emission(get_heat(pos));
+
+            total += em * transmittance / (1.0 + dist);
 
             transmittance *= exp(-mat_pos.extinction.rgb);
 
@@ -111,8 +115,9 @@ void BlurV(uint3 id : SV_DispatchThreadID) {
 }
 
 // ============================================================================
-// Radial bloom gather in 8 directions. No extinction — bloom bleeds through
-// everything so dense emissive clusters merge into a bright mass.
+// Radial bloom gather in 8 directions.
+// Gives bright emissive particles a nice glow.
+// Ignores the other lighting as we don't want the whole scene to be glowy.
 // ============================================================================
 [numthreads(8,8,1)]
 void BloomGather(uint3 id : SV_DispatchThreadID) {
@@ -137,8 +142,12 @@ void BloomGather(uint3 id : SV_DispatchThreadID) {
             dist += dir_len[d];
             if (!in_bounds(pos)) break;
 
-            const float3 em = get_mat_props(get_cell_data(pos)).emission.rgb;
-            total += em / (1.0 + dist * dist);
+            const uint bc = get_cell_data(pos);
+            if (is_empty(bc)) continue;
+
+            const float3 intrinsic = get_mat_props(bc).emission.rgb;
+            const float3 thermal = blackbody_emission(get_heat(pos));
+            total += (intrinsic + thermal) / (1.0 + dist * dist);
         }
     }
 

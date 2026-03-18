@@ -36,10 +36,16 @@ namespace FallingSand.Scripts {
         // Gases
         Steam      = 17,
         Smoke      = 18,
-        
+
         // Organics
         Algae      = 19,
         Sludge     = 20,
+        
+        // Metals
+        Copper     = 21,
+
+        // Cryogenics
+        LiquidN2   = 22,
     }
 
     /// <summary>
@@ -61,7 +67,7 @@ namespace FallingSand.Scripts {
     }
 
     /// <summary>
-    /// Defines spontaneous material transformation over time with no neighbor trigger.
+    /// Defines spontaneous material transformation over time.
     /// Probability is the chance per step that the source decays into the result.
     /// </summary>
     public readonly struct DecayRule {
@@ -90,13 +96,14 @@ namespace FallingSand.Scripts {
         public static IReadOnlyList<DecayRule> Decay => _decay;
 
         private static readonly List<MaterialDefinition> _materials = new() {
-            new() { Name = "Empty", Label = "EMPT" },
+            new() { Name = "Empty", Label = "EMPT", Conductivity = 0f, HeatCapacity = 0.01f },
 
             // Solids
             new() {
                 Name = "Bedrock", Label = "BDRK", Category = MaterialCategory.Solids,
                 Description = "Indestructible. Nothing affects it.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
+                InitialTemp = 22f, Conductivity = 0.47f, HeatCapacity = 4f,
                 Variation = 0.15f, Opacity = 1.5f,
                 Color = new Color(0.28f, 0.26f, 0.32f),
             },
@@ -104,6 +111,7 @@ namespace FallingSand.Scripts {
                 Name = "Stone", Label = "STNE", Category = MaterialCategory.Solids,
                 Description = "Solid. Dissolved by acid, melted by plasma.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
+                InitialTemp = 22f, Conductivity = 0.4f, HeatCapacity = 2f,
                 Variation = 0.25f, Opacity = 1f,
                 Color = new Color(0.42f, 0.38f, 0.35f),
             },
@@ -111,6 +119,7 @@ namespace FallingSand.Scripts {
                 Name = "Glass", Label = "GLAS", Category = MaterialCategory.Solids,
                 Description = "Transparent solid. Made from sand and lava.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
+                InitialTemp = 22f, Conductivity = 0.24f, HeatCapacity = 1.5f,
                 Variation = 0.1f, Opacity = 0.01f,
                 Color = new Color(0.7f, 0.85f, 0.9f, 0.5f),
             },
@@ -118,6 +127,7 @@ namespace FallingSand.Scripts {
                 Name = "Wood", Label = "WOOD", Category = MaterialCategory.Solids,
                 Description = "Solid. Burns slowly, ignited by fire, lava, or ember.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
+                InitialTemp = 22f, Conductivity = 0.06f, HeatCapacity = 2.5f,
                 Variation = 0.3f, Opacity = 1.5f,
                 Color = new Color(0.45f, 0.28f, 0.12f),
             },
@@ -125,15 +135,16 @@ namespace FallingSand.Scripts {
                 Name = "Ice", Label = "ICE", Category = MaterialCategory.Solids,
                 Description = "Transparent solid. Melts in water and fire.",
                 Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
+                InitialTemp = -10f, Conductivity = 0.47f, HeatCapacity = 2f,
                 Variation = 0.5f, Opacity = 0.06f,
                 Color = new Color(0.4f, 0.75f, 0.85f, 0.6f),
             },
-
             // Powders
             new() {
                 Name = "Sand", Label = "SAND", Category = MaterialCategory.Powders,
                 Description = "Light granular. Melted into glass by lava.",
                 Fluidity = 0, Density = 160, Weight = 128, Drag = 128,
+                InitialTemp = 22f, Conductivity = 0.16f, HeatCapacity = 1.5f,
                 Variation = 0.5f, Opacity = 0.7f,
                 Color = new Color(0.8207547f, 0.5865165f, 0.32907617f),
             },
@@ -141,6 +152,7 @@ namespace FallingSand.Scripts {
                 Name = "Gravel", Label = "GRVL", Category = MaterialCategory.Powders,
                 Description = "Heavy granular. Slowly melted by lava.",
                 Fluidity = 0, Density = 200, Weight = 128, Drag = 96,
+                InitialTemp = 22f, Conductivity = 0.31f, HeatCapacity = 2f,
                 Variation = 0.25f, Opacity = 1f,
                 Color = new Color(0.45f, 0.44f, 0.42f),
             },
@@ -148,6 +160,7 @@ namespace FallingSand.Scripts {
                 Name = "Snow", Label = "SNOW", Category = MaterialCategory.Powders,
                 Description = "Light powder. Melts in water, freezes on ice.",
                 Fluidity = 1, Density = 50, Weight = 128, Drag = 192,
+                InitialTemp = -10f, Conductivity = 0.08f, HeatCapacity = 1f,
                 Variation = 0.5f, Opacity = 0.04f,
                 Color = new Color(0.75f, 0.84f, 0.95f),
             },
@@ -155,6 +168,7 @@ namespace FallingSand.Scripts {
                 Name = "Gunpowder", Label = "GNPD", Category = MaterialCategory.Powders,
                 Description = "Flammable granular. Ignites almost instantly.",
                 Fluidity = 0, Density = 160, Weight = 128, Drag = 128,
+                InitialTemp = 22f, Conductivity = 0.12f, HeatCapacity = 1f,
                 Variation = 0.15f, Opacity = 1f,
                 Color = new Color(0.27f, 0.25f, 0.22f),
             },
@@ -164,6 +178,7 @@ namespace FallingSand.Scripts {
                 Name = "Water", Label = "WATR", Category = MaterialCategory.Liquids,
                 Description = "Fluid. Extinguishes fire, boils on lava.",
                 Fluidity = 255, Density = 100, Weight = 96, Drag = 128,
+                InitialTemp = 22f, Conductivity = 0.31f, HeatCapacity = 4f,
                 Variation = 0.1f, Opacity = 0.01f,
                 Color = new Color(0.14509802f, 0.36678076f, 0.7921569f, 0.7f),
             },
@@ -171,6 +186,7 @@ namespace FallingSand.Scripts {
                 Name = "Oil", Label = "OIL", Category = MaterialCategory.Liquids,
                 Description = "Viscous fluid. Floats on water, flammable.",
                 Fluidity = 64, Density = 70, Weight = 80, Drag = 128,
+                InitialTemp = 22f, Conductivity = 0.12f, HeatCapacity = 2f,
                 Variation = 0.1f, Opacity = 0.1f,
                 Color = new Color(0.43529412f, 0.29143146f, 0.23529412f),
             },
@@ -178,6 +194,7 @@ namespace FallingSand.Scripts {
                 Name = "Acid", Label = "ACID", Category = MaterialCategory.Liquids,
                 Description = "Corrosive fluid. Dissolves most solids. Neutralized by water.",
                 Fluidity = 200, Density = 110, Weight = 96, Drag = 128,
+                InitialTemp = 22f, Conductivity = 0.24f, HeatCapacity = 2f,
                 Variation = 0.2f, Opacity = 0.08f,
                 EmissionColor = new Color(0.2f, 1f, 0.1f),
                 EmissionIntensity = 0.4f,
@@ -187,6 +204,7 @@ namespace FallingSand.Scripts {
                 Name = "Lava", Label = "LAVA", Category = MaterialCategory.Liquids,
                 Description = "Hot viscous fluid. Ignites flammables, melts sand into glass.",
                 Fluidity = 8, Density = 190, Weight = 128, Drag = 192,
+                InitialTemp = 1200f, Conductivity = 0.6f, HeatCapacity = 5f,
                 Variation = 0.1f, Opacity = 0.4f,
                 EmissionColor = new Color(1f, 0.4f, 0.1f),
                 EmissionIntensity = 3f,
@@ -198,6 +216,7 @@ namespace FallingSand.Scripts {
                 Name = "Fire", Label = "FIRE", Category = MaterialCategory.Energy,
                 Description = "Hot, ignites flammables, burns out into ember.",
                 Fluidity = 1, Density = 5, Weight = -16, Drag = 120,
+                InitialTemp = 800f, Conductivity = 0.8f, HeatCapacity = 0.2f,
                 Variation = 0.8f, Opacity = 0.05f,
                 EmissionColor = new Color(1f, 0.6f, 0.1f),
                 EmissionIntensity = 2f,
@@ -207,6 +226,7 @@ namespace FallingSand.Scripts {
                 Name = "Ember", Label = "EMBR", Category = MaterialCategory.Energy,
                 Description = "Slow falling. Ignites flammables, decays to smoke.",
                 Fluidity = 2, Density = 30, Weight = 32, Drag = 220,
+                InitialTemp = 500f, Conductivity = 0.6f, HeatCapacity = 0.5f,
                 Variation = 0.6f, Opacity = 0.3f,
                 EmissionColor = new Color(1f, 0.4f, 0.05f),
                 EmissionIntensity = 1.2f,
@@ -216,6 +236,7 @@ namespace FallingSand.Scripts {
                 Name = "Plasma", Label = "PLSM", Category = MaterialCategory.Energy,
                 Description = "Extremely hot. Melts and burns almost everything.",
                 Fluidity = 32, Density = 3, Weight = -32, Drag = 100,
+                InitialTemp = 5000f, Conductivity = 1f, HeatCapacity = 8f,
                 Variation = 0.2f, Opacity = 0.03f,
                 EmissionColor = new Color(0.5f, 0.3f, 1f),
                 EmissionIntensity = 2f,
@@ -227,6 +248,7 @@ namespace FallingSand.Scripts {
                 Name = "Steam", Label = "STEM", Category = MaterialCategory.Gases,
                 Description = "Buoyant gas. Condenses on cold surfaces.",
                 Fluidity = 64, Density = 10, Weight = -32, Drag = 220,
+                InitialTemp = 100f, Conductivity = 0.04f, HeatCapacity = 0.5f,
                 Variation = 0.3f, Opacity = 0.02f,
                 Color = new Color(0.7f, 0.85f, 0.9f, 0.3f),
             },
@@ -234,6 +256,7 @@ namespace FallingSand.Scripts {
                 Name = "Smoke", Label = "SMKE", Category = MaterialCategory.Gases,
                 Description = "Buoyant gas. Dissipates over time.",
                 Fluidity = 128, Density = 8, Weight = -32, Drag = 128,
+                InitialTemp = 200f, Conductivity = 0.03f, HeatCapacity = 0.3f,
                 Variation = 0.2f, Opacity = 0.05f,
                 Color = new Color(0.2f, 0.2f, 0.15f, 0.7f),
             },
@@ -243,6 +266,7 @@ namespace FallingSand.Scripts {
                 Name = "Algae", Label = "ALGE", Category = MaterialCategory.Life,
                 Description = "Grows on water. Decays into sludge.",
                 Fluidity = 4, Density = 60, Weight = 64, Drag = 192,
+                InitialTemp = 22f, Conductivity = 0.08f, HeatCapacity = 1.5f,
                 Variation = 0.4f, Opacity = 0.04f,
                 Color = new Color(0.15f, 0.45f, 0.1f),
             },
@@ -250,8 +274,29 @@ namespace FallingSand.Scripts {
                 Name = "Sludge", Label = "SLDG", Category = MaterialCategory.Life,
                 Description = "Dead biomass. Burns slowly.",
                 Fluidity = 8, Density = 150, Weight = 96, Drag = 200,
+                InitialTemp = 22f, Conductivity = 0.1f, HeatCapacity = 2f,
                 Variation = 0.2f, Opacity = 0.8f,
                 Color = new Color(0.3f, 0.22f, 0.12f),
+            },
+
+            // Metals
+            new() {
+                Name = "Copper", Label = "COPR", Category = MaterialCategory.Solids,
+                Description = "Highly conductive metal. Spreads heat almost instantly.",
+                Fluidity = 0, Density = 255, Weight = 0, Drag = 0,
+                InitialTemp = 22f, Conductivity = 0.97f, HeatCapacity = 1.5f,
+                Variation = 0.15f, Opacity = 1.5f,
+                Color = new Color(0.72f, 0.45f, 0.20f),
+            },
+
+            // Cryogenics
+            new() {
+                Name = "Liquid Nitrogen", Label = "LN2", Category = MaterialCategory.Liquids,
+                Description = "Cryogenic fluid. Freezes almost everything on contact.",
+                Fluidity = 255, Density = 80, Weight = 96, Drag = 96,
+                InitialTemp = -200f, Conductivity = 0.1f, HeatCapacity = 2f,
+                Variation = 0.15f, Opacity = 0.005f,
+                Color = new Color(0.55f, 0.70f, 0.90f, 0.35f),
             },
         };
 
@@ -293,6 +338,16 @@ namespace FallingSand.Scripts {
             new(MatId.Gravel, MatId.Lava,  MatId.Lava,  0.02f),
             new(MatId.Gravel, MatId.Plasma, MatId.Lava,  0.5f),
             new(MatId.Gravel, MatId.Acid,  MatId.Empty, 0.05f),
+
+            // Copper
+            new(MatId.Copper, MatId.Acid,   MatId.Empty, 0.02f),
+            new(MatId.Copper, MatId.Plasma, MatId.Lava,  0.15f),
+
+            // Liquid Nitrogen — the *target* material transforms, not the LN2 itself.
+            new(MatId.Water, MatId.LiquidN2, MatId.Ice,   0.5f),
+            new(MatId.Fire,  MatId.LiquidN2, MatId.Empty, 0.8f),
+            new(MatId.Ember, MatId.LiquidN2, MatId.Empty, 0.6f),
+            new(MatId.Lava,  MatId.LiquidN2, MatId.Stone, 0.3f),
 
             // Snow
             new(MatId.Snow, MatId.Ice,      MatId.Ice,   0.01f),
@@ -377,6 +432,9 @@ namespace FallingSand.Scripts {
             
             // Algae slowly dies off into mud.
             new(MatId.Algae, MatId.Sludge, 0.0001f),
+
+            // LN2 boils off rapidly — real boiling point is -196C.
+            new(MatId.LiquidN2, MatId.Empty, 0.1f),
         };
     }
 }

@@ -77,6 +77,25 @@ namespace FallingSand.Scripts {
 
         public Color Color = Color.white;
 
+        /// <summary>
+        /// Temperature in Celsius when this material is first painted.
+        /// </summary>
+        public float InitialTemp = 22f;
+
+        /// <summary>
+        /// How quickly heat transfers through this material.
+        /// 0 = perfect insulator, 1 = instant conductor.
+        /// </summary>
+        [Range(0f, 1f)]
+        public float Conductivity = 0.2f;
+
+        /// <summary>
+        /// Energy needed per degree of temperature change.
+        /// Higher values = slower to heat/cool.
+        /// </summary>
+        [Range(0.01f, 10f)]
+        public float HeatCapacity = 1f;
+
         public static MaterialDefinition Empty() {
             return new MaterialDefinition {
                 Name = "Empty",

@@ -36,6 +36,9 @@
 #define MOVED_LAST_STEP 1   // Cell was moved in a prior color pass this step.
 #define MOVED_LAST_FRAME 2  // Cell moved at least once during the previous frame.
 
+#define MIN_TEMP -273.0  // Absolute zero.
+#define MAX_TEMP 10000.0 // Somewhat arbitrary maximum meaningful temperature.
+
 // Neighbor offset table.
 // First 4 are cardinal, last 4 are diagonal.
 static const int2 NEIGHBORS[8] = {
@@ -47,15 +50,22 @@ static const int2 NEIGHBORS[8] = {
 // Values are expected to be valid following sanitization on the C# side.
 // Note that the first index in the buffer is expected to be empty/air.
 struct MaterialProperties {
+    // --- Physics ---
     uint fluidity;
     uint density;
     int weight;     // Scales global _Gravity. 256 = normal, 0 = weightless, negative = buoyant.
-    uint drag;      // Proportional velocity decay. Terminal velocity emerges from weight/drag balance.
+    uint drag;      // Proportional velocity decay.
+    
+    // --- Thermodynamics ---
+    float initial_temp;   // Initial temperature of the material when created (Celsius).
+    float conductivity;   // Thermal conductivity. 0 = insulator, 1 = instant conductor.
+    float heat_capacity;  // Energy needed per change in degree.
 
+    // --- Visuals ---
     float variation;    // Brightness spread for color variants. 0 = flat, >0 = per-particle variation.
     float4 extinction;  // Per-channel light absorption (RGB). Derived from opacity and color on CPU.
     float4 color;
-    float4 emission;    // Pre-multiplied self-illumination (RGB * intensity).
+    float4 emission;    // Self-illumination.
 };
 
 // Reaction LUT entry.

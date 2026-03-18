@@ -11,12 +11,18 @@ namespace FallingSand.Scripts {
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     public struct GpuMaterialDefinition {
+        // --- Physics ---
         public readonly uint Fluidity;
         public readonly uint Density;
         public readonly int Weight;
         public readonly uint Drag;
+        
+        // --- Thermodynamics ---
+        public readonly float InitialTemp;
+        public readonly float Conductivity;
+        public readonly float HeatCapacity;
 
-        // Visual properties.
+        // --- Visuals ---
         public readonly float Variation;
         public readonly float4 Extinction; // Per-channel (RGB), derived from color and opacity.
         public readonly float4 Color;
@@ -27,19 +33,25 @@ namespace FallingSand.Scripts {
             uint density,
             int weight,
             uint drag,
+            float initialTemp,
+            float conductivity,
+            float heatCapacity,
             float variation,
             float4 extinction,
             float4 color,
             float4 emission
         ) {
-            Fluidity   = Math.Min(fluidity, 255);
-            Density    = Math.Min(density, 255);
-            Weight     = Math.Clamp(weight, -256, 256);
-            Drag       = Math.Min(drag, 255);
-            Variation  = Math.Clamp(variation, 0f, 1f);
-            Extinction = extinction;
-            Color = color;
-            Emission = emission;
+            Fluidity     = Math.Min(fluidity, 255);
+            Density      = Math.Min(density, 255);
+            Weight       = Math.Clamp(weight, -256, 256);
+            Drag         = Math.Min(drag, 255);
+            InitialTemp  = Math.Clamp(initialTemp, -273f, 10000f);
+            Conductivity = Math.Clamp(conductivity, 0f, 1f);
+            HeatCapacity = Math.Max(heatCapacity, 0.01f);
+            Variation    = Math.Clamp(variation, 0f, 1f);
+            Extinction   = extinction;
+            Color        = color;
+            Emission     = emission;
         }
 
         public static GpuMaterialDefinition FromDefinition(MaterialDefinition def) {
@@ -68,6 +80,9 @@ namespace FallingSand.Scripts {
                 (uint)def.Density,
                 def.Weight,
                 (uint)def.Drag,
+                def.InitialTemp,
+                def.Conductivity,
+                def.HeatCapacity,
                 def.Variation,
                 ext,
                 new float4(linear.r, linear.g, linear.b, linear.a),

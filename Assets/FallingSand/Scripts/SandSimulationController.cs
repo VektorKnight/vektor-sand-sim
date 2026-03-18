@@ -23,7 +23,17 @@ namespace FallingSand.Scripts {
     ///   F12               – save screenshot
     /// </summary>
     public class SandSimulationController : MonoBehaviour {
+        /// <summary>
+        /// Various canvas resolutions for the sim.
+        /// TODO: Consider standardizing on one like other sims to make saving/loading easier in the future.
+        /// </summary>
         public enum SimResolution { Res960x600, Res1280x800, Res1600x1000, Res1920x1200, Res2560x1600 }
+        
+        /// <summary>
+        /// Simulation is designed around 128 steps at 60Hz.
+        /// We can scale the steps and other interval-based kernels to try and keep consistent behavior at other rates.
+        /// Allows those with beefy GPUs and high refresh rates to get nice smooth motion and better frame-pacing.
+        /// </summary>
         public enum FrameRateCap { VSync, Cap60 }
 
         // Fix for windows to maintain proper resolution on high DPI.
@@ -45,14 +55,17 @@ namespace FallingSand.Scripts {
         [SerializeField] private SimResolution _simResolution = SimResolution.Res1600x1000;
         [SerializeField] [Range(1, 3)] private int _windowScale = 1;
         [SerializeField] private int _baseSimSteps = 256;
+        [SerializeField] [Range(1, 16)] private int _heatStepInterval = 8;
+        [SerializeField] [Range(1, 8)] private int _heatBurstCount = 4;
         [SerializeField] private FrameRateCap _frameRateCap = FrameRateCap.VSync;
-        [SerializeField] private ComputeShader _compute;
+        [SerializeField] private ComputeShader _simCompute;
 
         [Header("Visualization")]
         [SerializeField] private RawImage _tempVis;
         [SerializeField] private Shader _premultShader;
         [SerializeField] private SandLightingController _lighting;
         [SerializeField] private ComputeShader _visCompute;
+        [SerializeField] private Gradient _heatGradient;
 
         // GPU-side interaction structs. Must match SandUtil.hlsl layout.
         [StructLayout(LayoutKind.Sequential)]
@@ -69,9 +82,11 @@ namespace FallingSand.Scripts {
 
         // Kernel handles.
         private int KERNEL_PAINT;
-        private int KERNEL_PREPARE_FRAME;
+        private int KERNEL_PREP;
         private int KERNEL_SIM;
+        private int KERNEL_HEAT;
         private int KERNEL_VIS;
+        private int KERNEL_VIS_HEAT;
 
         // Paint state.
         private int _selectedIndex = 1;
@@ -95,6 +110,7 @@ namespace FallingSand.Scripts {
 
         // Data buffers.
         private ComputeBuffer _simData;
+        private ComputeBuffer _simHeat;
 
         // LUT buffers.
         private ComputeBuffer _materialBuffer;
@@ -119,12 +135,25 @@ namespace FallingSand.Scripts {
         // Pause state.
         private bool _paused;
 
+        // Heat view state.
+        private bool _heatView;
+        private Texture2D _heatGradTexture;
+
         // --- Public API ---
 
         public bool Paused {
             get => _paused;
             set => _paused = value;
         }
+
+        public bool HeatView {
+            get => _heatView;
+            set => _heatView = value;
+        }
+
+        public bool DebugReadback { get; set; }
+        public float CursorTemp { get; private set; }
+        public uint CursorCell { get; private set; }
 
         public IReadOnlyList<MaterialDefinition> Materials => MaterialTable.Materials;
         public SandLightingController Lighting => _lighting;
@@ -215,21 +244,23 @@ namespace FallingSand.Scripts {
             _tempVis.texture = null;
 
             if (_simData != null && _simData.IsValid()) _simData.Release();
-            if (_visTexture) Destroy(_visTexture);
-            if (_lightTexture) Destroy(_lightTexture);
-            if (_lightTextureTemp) Destroy(_lightTextureTemp);
+            if (_simHeat != null && _simHeat.IsValid()) _simHeat.Release();
+            
+            if (_visTexture)        Destroy(_visTexture);
+            if (_lightTexture)      Destroy(_lightTexture);
+            if (_lightTextureTemp)  Destroy(_lightTextureTemp);
 
             var dims = GetSimDimensions();
             var simWidth = dims.x;
             var simHeight = dims.y;
 
             _simData = new ComputeBuffer(simWidth * simHeight, sizeof(int));
+            _simHeat = new ComputeBuffer(simWidth * simHeight, sizeof(float));
 
             // DX12/VK do not zero new buffers.
             var zeroed = new NativeArray<int>(simWidth * simHeight, Allocator.Temp, NativeArrayOptions.ClearMemory);
-            
             _simData.SetData(zeroed);
-            
+            _simHeat.SetData(zeroed);
             zeroed.Dispose();
 
             _visTexture = new RenderTexture(simWidth, simHeight, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear) {
@@ -288,7 +319,7 @@ namespace FallingSand.Scripts {
             var mats = MaterialTable.Materials;
             var count = mats.Count;
             var data = new GpuMaterialDefinition[count];
-
+            
             for (var i = 0; i < count; i++) {
                 data[i] = GpuMaterialDefinition.FromDefinition(mats[i]);
             }
@@ -302,9 +333,9 @@ namespace FallingSand.Scripts {
             _materialBuffer.SetData(data);
 
             // Upload reaction LUT indexed by [source * MAX_MATERIALS + trigger].
-            var lut = new GpuReactionEntry[SandBindings.MAX_MATERIALS * SandBindings.MAX_MATERIALS];
+            var reactionsLut = new GpuReactionEntry[SandBindings.MAX_MATERIALS * SandBindings.MAX_MATERIALS];
             foreach (var r in MaterialTable.Reactions) {
-                lut[(int)r.Source * SandBindings.MAX_MATERIALS + (int)r.Trigger] = new GpuReactionEntry {
+                reactionsLut[(int)r.Source * SandBindings.MAX_MATERIALS + (int)r.Trigger] = new GpuReactionEntry {
                     Result = (uint)r.Result,
                     Probability = r.Probability,
                 };
@@ -316,7 +347,7 @@ namespace FallingSand.Scripts {
                 ComputeBufferType.Structured
             );
 
-            _reactionBuffer.SetData(lut);
+            _reactionBuffer.SetData(reactionsLut);
 
             // Upload decay LUT indexed by material ID.
             var decayLut = new GpuDecayEntry[SandBindings.MAX_MATERIALS];
@@ -394,17 +425,57 @@ namespace FallingSand.Scripts {
             }
         }
 
+        private void Reset() {
+            // Called by Unity when the component is first added or reset.
+            // Thanks Claude for the fancy gradient I couldn't be bothered to make by hand.
+            _heatGradient = new Gradient();
+            _heatGradient.SetKeys(
+                new[] {
+                    new GradientColorKey(new Color(0.05f, 0.05f, 0.60f), 0.00f),
+                    new GradientColorKey(new Color(0.00f, 0.40f, 0.80f), 0.08f),
+                    new GradientColorKey(new Color(0.00f, 0.75f, 0.65f), 0.14f),
+                    new GradientColorKey(new Color(0.10f, 0.80f, 0.15f), 0.18f),
+                    new GradientColorKey(new Color(0.95f, 0.90f, 0.10f), 0.25f),
+                    new GradientColorKey(new Color(1.00f, 0.50f, 0.05f), 0.32f),
+                    new GradientColorKey(new Color(0.90f, 0.10f, 0.05f), 0.43f),
+                    new GradientColorKey(new Color(1.00f, 1.00f, 1.00f), 0.72f),
+                },
+                new[] {
+                    new GradientAlphaKey(1f, 0f),
+                    new GradientAlphaKey(1f, 1f),
+                }
+            );
+        }
+
+        private void BakeHeatGradient() {
+            const int width = 256;
+            _heatGradTexture = new Texture2D(width, 1, TextureFormat.RGBA32, false) {
+                wrapMode = TextureWrapMode.Clamp,
+                filterMode = FilterMode.Bilinear,
+            };
+
+            var pixels = new Color[width];
+            for (var i = 0; i < width; i++)
+                pixels[i] = _heatGradient.Evaluate((float)i / (width - 1));
+
+            _heatGradTexture.SetPixels(pixels);
+            _heatGradTexture.Apply();
+        }
+
         // --- Lifecycle ---
 
         private void Start() {
-            KERNEL_PAINT         = _compute.FindKernel(SandBindings.KERNEL_PAINT);
-            KERNEL_PREPARE_FRAME = _compute.FindKernel(SandBindings.KERNEL_PREPARE_FRAME);
-            KERNEL_SIM           = _compute.FindKernel(SandBindings.KERNEL_SIMULATE);
-            KERNEL_VIS           = _visCompute.FindKernel(SandBindings.KERNEL_VISUALIZE);
+            KERNEL_PAINT    = _simCompute.FindKernel(SandBindings.KERNEL_PAINT);
+            KERNEL_PREP     = _simCompute.FindKernel(SandBindings.KERNEL_PREPARE);
+            KERNEL_SIM      = _simCompute.FindKernel(SandBindings.KERNEL_SIMULATE);
+            KERNEL_HEAT     = _simCompute.FindKernel(SandBindings.KERNEL_HEAT);
+            KERNEL_VIS      = _visCompute.FindKernel(SandBindings.KERNEL_VISUALIZE);
+            KERNEL_VIS_HEAT = _visCompute.FindKernel(SandBindings.KERNEL_VISUALIZE_HEAT);
 
             _cmd = new CommandBuffer { name = "Sand Simulation" };
 
             _lighting.Initialize();
+            BakeHeatGradient();
 
             CreateTableBuffers();
             CreateConstantBuffers();
@@ -419,17 +490,20 @@ namespace FallingSand.Scripts {
         }
 
         private void OnDisable() {
+            // TODO: Move these into a dedicated function if we add even more data layers.
             if (_simData != null && _simData.IsValid()) _simData.Release();
+            if (_simHeat != null && _simHeat.IsValid()) _simHeat.Release();
 
             ReleaseTableBuffers();
             ReleaseConstantBuffers();
 
             _lighting.Cleanup();
 
-            if (_visTexture)       Destroy(_visTexture);
-            if (_lightTexture)     Destroy(_lightTexture);
-            if (_lightTextureTemp) Destroy(_lightTextureTemp);
-            if (_premultMaterial)  Destroy(_premultMaterial);
+            if (_visTexture)        Destroy(_visTexture);
+            if (_lightTexture)      Destroy(_lightTexture);
+            if (_lightTextureTemp)  Destroy(_lightTextureTemp);
+            if (_premultMaterial)   Destroy(_premultMaterial);
+            if (_heatGradTexture)   Destroy(_heatGradTexture);
 
             _cmd?.Release();
 
@@ -445,7 +519,9 @@ namespace FallingSand.Scripts {
         }
 
         private void Update() {
-            if (!_compute || !_lighting || !_lighting.IsReady || !_simData.IsValid()) return;
+            if (!_simCompute || !_lighting || !_lighting.IsReady || !_simData.IsValid()) {
+                return;
+            }
 
             // FPS counter.
             _fpsCounter++;
@@ -469,6 +545,18 @@ namespace FallingSand.Scripts {
                 Debug.Log($"Screenshot saved: {path}");
             }
 
+            if (Input.GetKeyDown(KeyCode.Space)) {
+                _paused = !_paused;
+            }
+
+            if (Input.GetKeyDown(KeyCode.H)) {
+                _heatView = !_heatView;
+            }
+
+            if (Input.GetKeyDown(KeyCode.F3)) {
+                DebugReadback = !DebugReadback;
+            }
+
             // Handle deferred recreation before anything that touches sim resources.
             if (_pendingRecreate) {
                 _pendingRecreate = false;
@@ -481,18 +569,16 @@ namespace FallingSand.Scripts {
                 1, _baseSimSteps
             );
 
-            Profiler.BeginSample("Falling Sand Simulation");
-
-            // Build and stage SimConfig cbuffer early so paint dispatches can use it.
-            var simConfig = new SandBindings.SimConfigBuffer {
+            // Build and stage SimConfig cbuffer.
+            var configStaging = new NativeArray<SandBindings.SimConfigBuffer>(1, Allocator.Temp);
+            configStaging[0] = new SandBindings.SimConfigBuffer {
                 Dimensions = new uint2((uint)_visTexture.width, (uint)_visTexture.height),
                 StepsPerFrame = (uint)_baseSimSteps,
                 Gravity = (uint)_gravity,
                 CurrentFrame = (uint)_simFrame,
             };
 
-            var configStaging = new NativeArray<SandBindings.SimConfigBuffer>(1, Allocator.Temp);
-            configStaging[0] = simConfig;
+            
             _simConfigBuffer.SetData(configStaging);
 
             // Guard UI input.
@@ -557,24 +643,35 @@ namespace FallingSand.Scripts {
             // Bind SimConfig cbuffer to all compute shaders.
             var simConfigSize = Marshal.SizeOf<SandBindings.SimConfigBuffer>();
 
-            _cmd.SetComputeConstantBufferParam(_compute, SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, simConfigSize);
+            _cmd.SetComputeConstantBufferParam(_simCompute, SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, simConfigSize);
             _cmd.SetComputeConstantBufferParam(_lighting.Compute, SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, simConfigSize);
             _cmd.SetComputeConstantBufferParam(_visCompute, SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, simConfigSize);
 
             if (!_paused) {
                 // Bind structured buffers to sim kernels.
-                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_SIM_DATA, _simData);
-                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_MATERIAL_TABLE, _materialBuffer);
-                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_REACTION_TABLE, _reactionBuffer);
-                _cmd.SetComputeBufferParam(_compute, KERNEL_PREPARE_FRAME, SandBindings.ID_DECAY_TABLE, _decayBuffer);
-                _cmd.SetComputeBufferParam(_compute, KERNEL_SIM, SandBindings.ID_SIM_DATA, _simData);
-                _cmd.SetComputeBufferParam(_compute, KERNEL_SIM, SandBindings.ID_MATERIAL_TABLE, _materialBuffer);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_PREP, SandBindings.ID_SIM_DATA, _simData);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_PREP, SandBindings.ID_SIM_HEAT, _simHeat);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_PREP, SandBindings.ID_MATERIALS, _materialBuffer);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_PREP, SandBindings.ID_REACTIONS, _reactionBuffer);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_PREP, SandBindings.ID_DECAYS, _decayBuffer);
+                
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_SIM, SandBindings.ID_SIM_DATA, _simData);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_SIM, SandBindings.ID_SIM_HEAT, _simHeat);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_SIM, SandBindings.ID_MATERIALS, _materialBuffer);
+                
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_HEAT, SandBindings.ID_SIM_DATA, _simData);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_HEAT, SandBindings.ID_SIM_HEAT, _simHeat);
+                _cmd.SetComputeBufferParam(_simCompute, KERNEL_HEAT, SandBindings.ID_MATERIALS, _materialBuffer);
 
-                // PrepareFrame (conditional on accumulator).
+                // PrepareFrame is conditional on accumulator for consistent behavior.
                 _prepareFrameAccum += Time.unscaledDeltaTime;
                 if (_prepareFrameAccum >= 1f / 60f) {
                     _prepareFrameAccum -= 1f / 60f;
-                    if (_prepareFrameAccum >= 1f / 60f) _prepareFrameAccum = 0f;
+                    
+                    if (_prepareFrameAccum >= 1f / 60f) {
+                        _prepareFrameAccum = 0f;
+                    }
+                    
                     RecordPrepareCommands(_cmd);
                 }
 
@@ -582,16 +679,18 @@ namespace FallingSand.Scripts {
                 RecordSimulateCommands(_cmd);
             }
 
-            // Lighting (conditional on cadence and enabled).
             var cursorPos = Input.mousePosition;
             var cursorX = Mathf.FloorToInt(cursorPos.x * _visTexture.width / Screen.width);
             var cursorY = Mathf.FloorToInt(cursorPos.y * _visTexture.height / Screen.height);
 
-            _lighting.Record(
-                _cmd, _simData, _materialBuffer,
-                _lightTexture, _lightTextureTemp,
-                _simFrame
-            );
+            // Lighting.
+            if (!_heatView) {
+                _lighting.Record(
+                    _cmd, _simData, _simHeat, _materialBuffer,
+                    _lightTexture, _lightTextureTemp,
+                    _simFrame
+                );
+            }
 
             // Visualization.
             RecordVisualizeCommands(_cmd, cursorX, cursorY);
@@ -599,12 +698,28 @@ namespace FallingSand.Scripts {
             // Execute.
             Graphics.ExecuteCommandBuffer(_cmd);
 
+            // Debug readback of cell data under cursor.
+            // Unfortunately requires a hard sync but debug mode is debug mode.
+            // We don't get the luxury of easy particle data access like we would on the CPU.
+            // TODO: Async readback latency may be fine to try and reduce sync overhead.
+            if (DebugReadback &&
+                cursorX >= 0 && cursorX < _visTexture.width &&
+                cursorY >= 0 && cursorY < _visTexture.height) {
+                var idx = cursorX + cursorY * _visTexture.width;
+                var tmpHeat = new float[1];
+                var tmpCell = new uint[1];
+                
+                _simHeat.GetData(tmpHeat, 0, idx, 1);
+                _simData.GetData(tmpCell, 0, idx, 1);
+                
+                CursorTemp = tmpHeat[0];
+                CursorCell = tmpCell[0];
+            }
+
             if (!_paused) {
                 _simFrame++;
                 _stepOffset = (_stepOffset + _effectiveSteps) % _baseSimSteps;
             }
-
-            Profiler.EndSample();
         }
 
         // --- Paint ---
@@ -660,24 +775,26 @@ namespace FallingSand.Scripts {
             staging[0] = paintData;
             _simPaintBuffer.SetData(staging);
 
-            _compute.SetConstantBuffer(SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, Marshal.SizeOf<SandBindings.SimConfigBuffer>());
-            _compute.SetConstantBuffer(SandBindings.ID_CB_SIM_PAINT, _simPaintBuffer, 0, Marshal.SizeOf<SandBindings.SimPaintBuffer>());
-            _compute.SetBuffer(KERNEL_PAINT, SandBindings.ID_SIM_DATA, _simData);
+            _simCompute.SetConstantBuffer(SandBindings.ID_CB_SIM_CONFIG, _simConfigBuffer, 0, Marshal.SizeOf<SandBindings.SimConfigBuffer>());
+            _simCompute.SetConstantBuffer(SandBindings.ID_CB_SIM_PAINT, _simPaintBuffer, 0, Marshal.SizeOf<SandBindings.SimPaintBuffer>());
+            _simCompute.SetBuffer(KERNEL_PAINT, SandBindings.ID_SIM_DATA, _simData);
+            _simCompute.SetBuffer(KERNEL_PAINT, SandBindings.ID_SIM_HEAT, _simHeat);
+            _simCompute.SetBuffer(KERNEL_PAINT, SandBindings.ID_MATERIALS, _materialBuffer);
 
             var diameter = 2 * r + 1;
             var groupsX = Mathf.CeilToInt((float)diameter / 8);
             var groupsY = Mathf.CeilToInt((float)diameter / 8);
 
-            _compute.Dispatch(KERNEL_PAINT, groupsX, groupsY, 1);
+            _simCompute.Dispatch(KERNEL_PAINT, groupsX, groupsY, 1);
         }
 
-        // --- Command recording ---
+        // --- Command Recording ---
 
         private void RecordPrepareCommands(CommandBuffer cmd) {
             var groupsX = Mathf.CeilToInt((float)_visTexture.width / 8);
             var groupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
 
-            cmd.DispatchCompute(_compute, KERNEL_PREPARE_FRAME, groupsX, groupsY, 1);
+            cmd.DispatchCompute(_simCompute, KERNEL_PREP, groupsX, groupsY, 1);
         }
 
         private void RecordVisualizeCommands(CommandBuffer cmd, int cursorX, int cursorY) {
@@ -685,8 +802,8 @@ namespace FallingSand.Scripts {
                 CursorPos = new int2(cursorX, cursorY),
                 CursorRadius = (uint)_paintRadius,
                 CursorMaterial = (uint)_selectedIndex,
-                LightEnabled = _lighting.LightEnabled ? 1u : 0u,
-                BloomIntensity = _lighting.EffectiveBloomIntensity,
+                LightEnabled = !_heatView && _lighting.LightEnabled ? 1u : 0u,
+                BloomIntensity = _heatView ? 0f : _lighting.EffectiveBloomIntensity,
             };
 
             var staging = new NativeArray<SandBindings.VisConfigBuffer>(1, Allocator.Temp);
@@ -695,20 +812,29 @@ namespace FallingSand.Scripts {
 
             cmd.SetComputeConstantBufferParam(_visCompute, SandBindings.ID_CB_VIS_CONFIG, _visConfigBuffer, 0, Marshal.SizeOf<SandBindings.VisConfigBuffer>());
 
-            cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS, SandBindings.ID_SIM_DATA, _simData);
-            cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS, SandBindings.ID_MATERIAL_TABLE, _materialBuffer);
-            cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_VIS_TEXTURE, _visTexture);
-            cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_LIGHT_TEXTURE_READ, _lightTexture);
-
-            var bloomTexture = _lighting.BloomTexture;
-            if (bloomTexture) {
-                cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_BLOOM_TEXTURE_READ, bloomTexture);
-            }
-
             var groupsX = Mathf.CeilToInt((float)_visTexture.width / 8);
             var groupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
 
-            cmd.DispatchCompute(_visCompute, KERNEL_VIS, groupsX, groupsY, 1);
+            if (_heatView) {
+                cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS_HEAT, SandBindings.ID_SIM_DATA, _simData);
+                cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS_HEAT, SandBindings.ID_SIM_HEAT, _simHeat);
+                cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS_HEAT, SandBindings.ID_MATERIALS, _materialBuffer);
+                cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS_HEAT, SandBindings.ID_VIS_TEXTURE, _visTexture);
+                cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS_HEAT, SandBindings.ID_HEAT_GRAD, _heatGradTexture);
+                cmd.DispatchCompute(_visCompute, KERNEL_VIS_HEAT, groupsX, groupsY, 1);
+            } else {
+                cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS, SandBindings.ID_SIM_DATA, _simData);
+                cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS, SandBindings.ID_SIM_HEAT, _simHeat);
+                cmd.SetComputeBufferParam(_visCompute, KERNEL_VIS, SandBindings.ID_MATERIALS, _materialBuffer);
+                cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_VIS_TEXTURE, _visTexture);
+                cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_LIGHT_TEXTURE_READ, _lightTexture);
+
+                var bloomTexture = _lighting.BloomTexture;
+                if (bloomTexture)
+                    cmd.SetComputeTextureParam(_visCompute, KERNEL_VIS, SandBindings.ID_BLOOM_TEXTURE_READ, bloomTexture);
+
+                cmd.DispatchCompute(_visCompute, KERNEL_VIS, groupsX, groupsY, 1);
+            }
         }
 
         private void RecordSimulateCommands(CommandBuffer cmd) {
@@ -718,9 +844,22 @@ namespace FallingSand.Scripts {
             for (var i = 0; i < _effectiveSteps; i++) {
                 var offset = (_simFrame * _effectiveSteps + i) & 3;
                 for (var p = 0; p < 4; p++) {
-                    cmd.SetComputeIntParam(_compute, SandBindings.ID_SIM_STEP, _stepOffset + i);
-                    cmd.SetComputeIntParam(_compute, SandBindings.ID_SIM_PASS, (p + offset) & 3);
-                    cmd.DispatchCompute(_compute, KERNEL_SIM, groupsX, groupsY, 1);
+                    cmd.SetComputeIntParam(_simCompute, SandBindings.ID_SIM_STEP, _stepOffset + i);
+                    cmd.SetComputeIntParam(_simCompute, SandBindings.ID_SIM_PASS, (p + offset) & 3);
+                    cmd.DispatchCompute(_simCompute, KERNEL_SIM, groupsX, groupsY, 1);
+                }
+                
+                // Run heat diffusion in bursts with red/black checkerboard.
+                // Dispatched at half width — each thread remaps to its checkerboard cell.
+                if ((i % _heatStepInterval) == 0) {
+                    var hGroupsX = Mathf.CeilToInt((float)_visTexture.width / 2f / 8);
+                    var hGroupsY = Mathf.CeilToInt((float)_visTexture.height / 8);
+                    for (var b = 0; b < _heatBurstCount; b++) {
+                        cmd.SetComputeIntParam(_simCompute, SandBindings.ID_HEAT_PARITY, 0);
+                        cmd.DispatchCompute(_simCompute, KERNEL_HEAT, hGroupsX, hGroupsY, 1);
+                        cmd.SetComputeIntParam(_simCompute, SandBindings.ID_HEAT_PARITY, 1);
+                        cmd.DispatchCompute(_simCompute, KERNEL_HEAT, hGroupsX, hGroupsY, 1);
+                    }
                 }
             }
         }

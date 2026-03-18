@@ -42,7 +42,7 @@ namespace FallingSand.Scripts {
         private bool _defaultBloomEnabled;
         private int _defaultDownscale;
 
-        // Bloom textures (owned by this controller).
+        // Bloom textures.
         private RenderTexture _bloomTexture;
         private RenderTexture _bloomTextureTemp;
 
@@ -159,10 +159,9 @@ namespace FallingSand.Scripts {
 
         public void Record(
             CommandBuffer cmd,
-            ComputeBuffer simData,
+            ComputeBuffer simData, ComputeBuffer simHeat,
             ComputeBuffer materialBuffer,
-            RenderTexture lightTexture,
-            RenderTexture lightTextureTemp,
+            RenderTexture lightTexture, RenderTexture lightTextureTemp,
             int simFrame
         ) {
             if (!_lightEnabled) {
@@ -180,8 +179,9 @@ namespace FallingSand.Scripts {
             var rad = _lightAngle * Mathf.Deg2Rad;
             var lc = _lightColor.linear;
             var ac = _ambientColor.linear;
-
-            var lightConfig = new SandBindings.LightConfigBuffer {
+            
+            var staging = new NativeArray<SandBindings.LightConfigBuffer>(1, Allocator.Temp);
+            staging[0] = new SandBindings.LightConfigBuffer {
                 LightColor = new float4(lc.r * _lightIntensity, lc.g * _lightIntensity, lc.b * _lightIntensity, 1f),
                 AmbientColor = new float4(ac.r, ac.g, ac.b, 1f),
                 
@@ -197,10 +197,6 @@ namespace FallingSand.Scripts {
                 BloomSteps = (uint)_bloomSteps,
                 LightDimensions = new uint2((uint)lightTexture.width, (uint)lightTexture.height),
             };
-
-            var staging = new NativeArray<SandBindings.LightConfigBuffer>(1, Allocator.Temp);
-            
-            staging[0] = lightConfig;
             
             _lightConfigBuffer.SetData(staging);
 
@@ -212,7 +208,7 @@ namespace FallingSand.Scripts {
 
             // Bind buffers/textures.
             cmd.SetComputeBufferParam(_compute, KERNEL_LIGHT, SandBindings.ID_SIM_DATA, simData);
-            cmd.SetComputeBufferParam(_compute, KERNEL_LIGHT, SandBindings.ID_MATERIAL_TABLE, materialBuffer);
+            cmd.SetComputeBufferParam(_compute, KERNEL_LIGHT, SandBindings.ID_MATERIALS, materialBuffer);
             cmd.SetComputeTextureParam(_compute, KERNEL_LIGHT, SandBindings.ID_LIGHT_TEXTURE, lightTexture);
 
             // Light dispatch.
@@ -220,7 +216,8 @@ namespace FallingSand.Scripts {
 
             // Emission dispatch.
             cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_SIM_DATA, simData);
-            cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_MATERIAL_TABLE, materialBuffer);
+            cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_SIM_HEAT, simHeat);
+            cmd.SetComputeBufferParam(_compute, KERNEL_EMISSION, SandBindings.ID_MATERIALS, materialBuffer);
             cmd.SetComputeTextureParam(_compute, KERNEL_EMISSION, SandBindings.ID_LIGHT_TEXTURE, lightTexture);
             cmd.DispatchCompute(_compute, KERNEL_EMISSION, lightGroupsX, lightGroupsY, 1);
 
@@ -231,8 +228,12 @@ namespace FallingSand.Scripts {
 
             // Bloom.
             if (_bloomEnabled) {
+                cmd.SetRenderTarget(_bloomTexture);
+                cmd.ClearRenderTarget(false, true, Color.clear);
+
                 cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_SIM_DATA, simData);
-                cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_MATERIAL_TABLE, materialBuffer);
+                cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_SIM_HEAT, simHeat);
+                cmd.SetComputeBufferParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_MATERIALS, materialBuffer);
                 cmd.SetComputeTextureParam(_compute, KERNEL_BLOOM_GATHER, SandBindings.ID_BLOOM_TEXTURE, _bloomTexture);
                 cmd.DispatchCompute(_compute, KERNEL_BLOOM_GATHER, lightGroupsX, lightGroupsY, 1);
 
@@ -254,7 +255,7 @@ namespace FallingSand.Scripts {
             cmd.DispatchCompute(_compute, KERNEL_BLUR_V, groupsX, groupsY, 1);
         }
 
-        // --- Bloom texture lifecycle ---
+        // --- Bloom Textures ---
 
         private void EnsureBloomTextures(int width, int height) {
             if (_bloomTexture && _bloomTexture.width == width && _bloomTexture.height == height)
@@ -280,8 +281,13 @@ namespace FallingSand.Scripts {
         }
 
         private void ReleaseBloomTextures() {
-            if (_bloomTexture) { Destroy(_bloomTexture); _bloomTexture = null; }
-            if (_bloomTextureTemp) { Destroy(_bloomTextureTemp); _bloomTextureTemp = null; }
+            if (_bloomTexture) {
+                Destroy(_bloomTexture); _bloomTexture = null;
+            }
+
+            if (_bloomTextureTemp) {
+                Destroy(_bloomTextureTemp); _bloomTextureTemp = null;
+            }
         }
     }
 }

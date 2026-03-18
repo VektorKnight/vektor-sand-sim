@@ -1,27 +1,26 @@
 #include "SandUtil.hlsl"
 
 // ============================================================================
-// GPU falling-sand simulation using a single-buffer, four-color tiling
-// scheme with compare-and-swap (CAS) for thread-safe cell movement.
+// GPU falling-sand simulation using a single buffer pattern.
+// Four-color tiling scheme with atomics CAS on shared cardinals prevents race conditions.
+// The heat system does technically have ordering issues as we cannot coordinate atomics across buffers.
+// In practice, this doesn't really matter much. Heat diffuses and averages out and perfect isn't the goal here.
 //
 // Frame execution order (driven by SandSimulationController.cs):
 //   1. Paint        – write user input into the grid
 //   2. PrepareFrame – clear flags, reset stalled velocity, apply gravity and drag
-//   3. Simulate     – StepsPerFrame iterations × 4 passes of movement
+//   3. Simulate     – StepsPerFrame iterations with four color passes.
 //
-// Post-process lighting and visualization live in SandLighting.compute.
-//
-// The four-color tiling (2x2 pattern, 4 passes) ensures no two cells within
-// Chebyshev distance 1 are evaluated in the same pass, eliminating all
-// neighbor-to-neighbor data races including diagonals. Cardinal neighbor contention
-// is handled by a single CAS.
+// Performance seems decent so far. Admittedly moving quick on features unless performance degrades significantly.
+// Heat was a decent expense added on but is manageable since it runs at some interval of the simulation steps.
 // ============================================================================
 
 #pragma kernel Paint
 #pragma kernel PrepareFrame
 #pragma kernel Simulate
+#pragma kernel DiffuseHeat
 
-// --- Constant buffers ---
+// --- Constant Buffers ---
 
 cbuffer SimConfig {
     uint2 Dimensions;
@@ -37,17 +36,20 @@ cbuffer SimPaint {
     uint PaintReplace;
 };
 
-// --- Bare uniforms (change per-step/pass) ---
+// --- Uniforms ---
 int _SimStep;
 int _SimPass;
+int _HeatParity; // 0 or 1, alternates per heat dispatch for red/black checkerboard.
 
 // Simulation data buffers.
 StructuredBuffer<MaterialProperties> _Materials;
+
 RWStructuredBuffer<uint> _SimData;
+RWStructuredBuffer<float> _SimHeat;
 
 // Interaction tables.
 StructuredBuffer<ReactionEntry> _Reactions; // LUT indexed by [source * MAX_MATERIALS + trigger]
-StructuredBuffer<DecayEntry> _Decay; // LUT indexed by material ID
+StructuredBuffer<DecayEntry> _Decay;        // LUT indexed by material ID
 
 // Convert a 2D index to 1D buffer.
 int to_flat(int2 i) {
@@ -75,6 +77,16 @@ void set_cell_data(int2 id, uint data) {
     _SimData[to_flat(id)] = data;
 }
 
+// Fetch heat for a cell at a given position.
+float get_cell_heat(int2 id) {
+    return _SimHeat[to_flat(id)];
+}
+
+// Set heat for a cell at a given position.
+void set_cell_heat(int2 id, float heat) {
+    _SimHeat[to_flat(id)] = heat;
+}
+
 // Bresenham-style gating.
 // Distributes interval-based actions evenly across StepsPerFrame.
 // Returns true on steps where the scaled position crosses an integer boundary.
@@ -84,7 +96,7 @@ bool bresenham(int vel) {
            floor((_SimStep - 1) * vel / steps);
 }
 
-// Attempts to execute a desired move while handling neighbor contention between threads with an atomic CAS.
+// Attempts to execute a desired move.
 bool try_move(int2 from, int2 to, uint cell) {
     // Delete particles that leave the grid.
     // TODO: Maybe this should be a toggle.
@@ -98,19 +110,25 @@ bool try_move(int2 from, int2 to, uint cell) {
     // Density swapping. At least one must be a fluid, target must not be immovable.
     // Swap probability scales with density difference and fluidity.
     // Large density gaps settle fast, small gaps churn. Low fluidity resists displacement.
+    //
     // TODO: Admittedly I'm dart-boarding a lot here. Current approach seems decent but still not amazing.
+    // Adding a proper pressure and velocity layer will eliminate this funky code as fluids/gasses will equalize.
+    // probably handle that after heat since diffusion is similar logic.
     if (!is_empty(cell_to)) {
         const MaterialProperties mat_from = get_mat_props(cell);
         const MaterialProperties mat_to   = get_mat_props(cell_to);
 
         if (mat_from.fluidity == 0 && mat_to.fluidity == 0) return false;
-        if (mat_to.weight == 0 && mat_to.fluidity == 0) return false;
+        if (mat_to.weight == 0 && mat_to.fluidity == 0)     return false;
 
         const bool rising = to.y > from.y;
         const int diff = rising
             ? (int)mat_to.density - (int)mat_from.density
             : (int)mat_from.density - (int)mat_to.density;
-        if (diff <= 0) return false;
+        
+        if (diff <= 0) {
+            return false;
+        }
 
         // Best version so far.
         // Fixes an issue where very viscous fluids would effectively halt heavier granulars from passing through.
@@ -132,6 +150,14 @@ bool try_move(int2 from, int2 to, uint cell) {
     InterlockedCompareExchange(_SimData[to_flat(to)], cell_to, flagged_cell, original);
     if ((uint)original == cell_to) {
         set_cell_data(from, flagged_to);
+        
+        // Also swap heat if we won the CAS.
+        const float heat_from = get_cell_heat(from);
+        const float heat_to = get_cell_heat(to);
+
+        set_cell_heat(from, heat_to);
+        set_cell_heat(to, heat_from);
+        
         return true;
     }
 
@@ -195,11 +221,19 @@ void evaluate_move(uint2 id) {
         const int grav_dir = mat.weight >= 0 ? -1 : 1;
         const int2 ahead = id + int2(0, grav_dir);
 
-        if (!in_bounds(ahead))return;
+        if (!in_bounds(ahead)) {
+            return;
+        }
 
         const uint ahead_cell = get_cell_data(ahead);
-        if (is_empty(ahead_cell)) return;
-        if (get_mat_props(ahead_cell).density < mat.density) return;
+        
+        if (is_empty(ahead_cell)) {
+            return;
+        }
+        
+        if (get_mat_props(ahead_cell).density < mat.density) {
+            return;
+        }
 
         const int side = (hash(id, CurrentFrame * StepsPerFrame + _SimStep) & 1) == 0 ? -1 : 1;
 
@@ -242,6 +276,7 @@ void Paint(uint3 id : SV_DispatchThreadID) {
     }
 
     set_cell_data(cell, make_cell(PaintMaterial, cell));
+    set_cell_heat(cell, _Materials[PaintMaterial].initial_temp);
 }
 
 // Determines if a reaction/decay should occur based on the probability.
@@ -312,7 +347,12 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     for (uint n = 0; n < 8; n++) {
         const ReactionEntry reaction = _Reactions[lut_row + neighbor_mats[n]];
         if (reaction.probability > 0 && should_react(id.xy, reaction.probability, mat_id * 8 + n)) {
-            cell = make_cell(reaction.result, id.xy);
+            cell = set_mat_id(cell, reaction.result);
+
+            // Ensure heat is at least the new material's initial temperature.
+            // e.g. wood (22C) catching fire should become 800C, not stay at 22C.
+            const float product_temp = _Materials[reaction.result].initial_temp;
+            set_cell_heat(id.xy, max(get_cell_heat(id.xy), product_temp));
 
             reacted = true;
 
@@ -325,7 +365,9 @@ void PrepareFrame(uint3 id : SV_DispatchThreadID) {
     if (!reacted) {
         const DecayEntry decay = _Decay[mat_id];
         if (decay.probability > 0 && should_react(id.xy, decay.probability, 256u + mat_id)) {
-            cell = make_cell(decay.result, id.xy);
+            cell = set_mat_id(cell, decay.result);
+            // Decay preserves current heat — the material is transforming, not igniting.
+            // Diffusion handles cooling naturally over time.
         }
     }
 
@@ -347,4 +389,67 @@ void Simulate(uint3 id : SV_DispatchThreadID) {
     }
 
     evaluate_move(cell_id);
+}
+
+// ============================================================================
+// Handles diffusion of cell heat across the simulation.
+// Uses TPT-style weighted average equilibration.
+// Had to use groupshared to optimize memory access and keep the cost down.
+// Dispatched at half width — each thread remaps to its red or black cell.
+// _HeatParity alternates 0/1 between dispatches.
+// Parity 0: cell.x = thread.x * 2 + (thread.y & 1)       (red)
+// Parity 1: cell.x = thread.x * 2 + ((thread.y + 1) & 1) (black)
+// Cardinal neighbors of any red cell are all black and vice versa,
+// so reads are guaranteed stable within each pass.
+// ============================================================================
+[numthreads(8,8,1)]
+void DiffuseHeat(uint3 id : SV_DispatchThreadID) {
+    // Remap thread ID to checkerboard cell position.
+    const int2 sim_pos = int2(
+        (int)id.x * 2 + (((int)id.y + _HeatParity) & 1),
+        (int)id.y
+    );
+
+    if (!in_bounds(sim_pos)) return;
+
+    const uint cell = get_cell_data(sim_pos);
+    if (is_empty(cell)) return;
+
+    const uint mat_id = get_mat_id(cell);
+    const float cell_cond = _Materials[mat_id].conductivity;
+    const float cell_cap = _Materials[mat_id].heat_capacity;
+    const float cell_heat = get_cell_heat(sim_pos);
+
+    float weighted_sum = cell_heat * cell_cap;
+    float total_capacity = cell_cap;
+    float avg_conductivity = 0;
+    uint neighbor_count = 0;
+
+    [unroll]
+    for (uint i = 0; i < 4; i++) {
+        const int2 n_id = sim_pos + NEIGHBORS[i];
+
+        if (in_bounds(n_id)) {
+            const uint n_cell = get_cell_data(n_id);
+
+            if (!is_empty(n_cell)) {
+                const uint n_mat_id = get_mat_id(n_cell);
+                const float n_cap = _Materials[n_mat_id].heat_capacity;
+                const float n_cond = _Materials[n_mat_id].conductivity;
+
+                weighted_sum += get_cell_heat(n_id) * n_cap;
+                total_capacity += n_cap;
+                avg_conductivity += min(cell_cond, n_cond);
+                neighbor_count++;
+            }
+        }
+    }
+
+    if (neighbor_count == 0) return;
+
+    const float avg = weighted_sum / total_capacity;
+    const float rate = avg_conductivity / (float)neighbor_count;
+    const float new_heat = lerp(cell_heat, avg, rate);
+
+    set_cell_heat(sim_pos, clamp(new_heat, MIN_TEMP, MAX_TEMP));
 }
